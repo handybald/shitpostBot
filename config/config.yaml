@@ -1,0 +1,131 @@
+# ShitPostBot Configuration
+
+instagram:
+  user_id: ${IG_USER_ID}
+  access_token: ${IG_ACCESS_TOKEN}
+  app_id: ${IG_APP_ID}
+  app_secret: ${IG_APP_SECRET}
+  api_version: "v19.0"
+
+telegram:
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  admin_users: ["${TELEGRAM_ADMIN_ID}"]  # Your admin ID from TELEGRAM_ADMIN_ID env var (will be parsed as integer)
+  enabled: true
+
+llm:
+  provider: "openai"  # openai or anthropic
+  api_key: ${OPENAI_API_KEY}
+  model: "gpt-4o-mini"
+  caption_temperature: 0.8
+  max_tokens: 200
+
+video:
+  output_dir: "data/output"
+  font_name: "Impact"
+  # Visual effects parameters
+  dizzy_rot_amp: 0.008
+  dizzy_drift_amp: 8
+  dizzy_crop_pad: 80
+  contrast: 1.20
+  brightness: 0.00
+  vignette_angle: "PI/4"
+
+audio:
+  # Audio processing chain parameters
+  bass_boost_db: 7
+  bass_freq: 90
+  comp_threshold: -16
+  comp_ratio: 6.0
+  comp_attack: 5
+  comp_release: 80
+  limiter: -0.3
+  target_lufs: -14
+
+content:
+  generation:
+    batch_size: 5  # Generate 5 reels at a time
+    queue_target: 7  # Keep 7 pending reels in queue
+    quality_threshold: 0.75
+    max_duration: 90  # seconds, max reel length
+
+  selection:
+    avoid_recent_assets: 10  # Don't reuse last N assets
+    theme_rotation: true
+    prefer_less_used: true
+
+  themes:
+    - name: "motivation"
+      video_keywords: ["gym", "workout", "business", "success"]
+      quote_keywords: ["success", "motivation", "achieve", "dream"]
+      music_energy: "high"
+
+    - name: "philosophy"
+      video_keywords: ["city", "night", "nature", "contemplation"]
+      quote_keywords: ["wisdom", "life", "meaning", "philosophy"]
+      music_energy: "medium"
+
+    - name: "hustle"
+      video_keywords: ["boxing", "training", "gym", "business"]
+      quote_keywords: ["work", "grind", "hustle", "succeed"]
+      music_energy: "high"
+
+scheduling:
+  enabled: true
+  post_times:
+    - day: 1  # Monday
+      time: "18:00"
+    - day: 3  # Wednesday
+      time: "18:00"
+    - day: 5  # Friday
+      time: "18:00"
+  timezone: "Europe/Istanbul"
+  calendar_buffer_days: 30  # Populate calendar 30 days in advance
+
+automation:
+  enabled: true
+  generate_interval: 21600  # 6 hours (seconds)
+  metrics_interval: 10800   # 3 hours (seconds)
+  queue_check_interval: 3600  # 1 hour (seconds)
+  calendar_check_interval: 300  # 5 minutes (seconds)
+
+video_processing:
+  output_resolution: "1080x1920"
+  frame_rate: 30
+  codec: "libx264"
+  quality: 18  # CRF value (lower = better, 0-51)
+  ffmpeg_preset: "medium"
+
+audio_processing:
+  bass_boost_db: 7
+  bass_freq: 90
+  compressor_threshold: -16
+  compressor_ratio: 6.0
+  target_lufs: -14
+  audio_codec: "aac"
+  audio_bitrate: "192k"
+
+storage:
+  s3_enabled: true
+  s3_bucket: ${S3_BUCKET_NAME}
+  s3_region: ${AWS_REGION}
+  local_path: "data/output"
+  keep_local_copies: true
+
+database:
+  url: "sqlite:///./database/bot.db"
+  pool_size: 5
+  max_overflow: 10
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "bot.log"
+  max_bytes: 10485760  # 10MB
+  backup_count: 5
+
+analytics:
+  collection_enabled: true
+  collection_interval: 10800  # 3 hours
+  learning_enabled: true
+  learning_rate: 0.1
+  window_days: 30  # Analyze last 30 days of data
