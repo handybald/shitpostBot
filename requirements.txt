@@ -1,0 +1,45 @@
+# Core dependencies
+python-dotenv>=1.0.0
+requests>=2.31.0
+boto3>=1.34.0
+
+# Database & ORM
+SQLAlchemy>=2.0.23
+alembic>=1.13.0
+
+# Telegram Bot
+python-telegram-bot>=20.3
+
+# Scheduling
+APScheduler>=3.10.4
+
+# Configuration
+PyYAML>=6.0
+
+# LLM & AI
+openai>=1.3.0
+anthropic>=0.7.0
+
+# Utilities
+click>=8.1.7
+pandas>=2.1.3
+numpy>=1.26.2
+
+# Analytics & ML
+scikit-learn>=1.3.2
+
+# Async & HTTP
+aiohttp>=3.9.1
+
+# Testing
+pytest>=7.4.3
+pytest-asyncio>=0.21.1
+pytest-cov>=4.1.0
+
+# Linting & Formatting
+black>=23.12.0
+flake8>=6.1.0
+isort>=5.13.2
+
+# Additional useful packages
+librosa>=0.10.0
