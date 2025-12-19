@@ -15,6 +15,8 @@ from typing import Optional, List, Dict, Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+
+from pathlib import Path
 from apscheduler.triggers.cron import CronTrigger
 
 from src.utils.logger import get_logger
@@ -26,6 +28,8 @@ from src.database.repositories import (
 )
 from src.processors import ContentSelector, VideoGenerator, QualityChecker
 from src.services import InstagramService, LLMProvider
+from src.services.gemini_content_generator import GeminiContentGenerator
+from src.services.content_downloader import ContentDownloader
 
 logger = get_logger(__name__)
 
@@ -68,6 +72,8 @@ class BotOrchestrator:
         self.quality_checker = QualityChecker()
         self.instagram = InstagramService.from_config()
         self.llm = LLMProvider.from_config()
+        self.gemini_generator = GeminiContentGenerator()
+        self.content_downloader = ContentDownloader()
 
         # Schedule background jobs
         self._schedule_jobs()
@@ -282,32 +288,122 @@ class BotOrchestrator:
 
         for i in range(count):
             try:
-                # Select content
-                if theme:
-                    combination = self.content_selector.find_matching_combination(theme=theme)
+                # Generate AI-powered content idea first (if available)
+                use_ai_prompt = self.gemini_generator.client is not None
+
+                if use_ai_prompt:
+                    logger.info(f"[{i+1}/{count}] Generating AI-powered content idea...")
+                    content_idea = self.gemini_generator.generate_content_idea(
+                        theme=theme,
+                        style="redpill_motivational"
+                    )
+                    logger.info(f"[{i+1}/{count}] AI prompt: {content_idea.prompt[:60]}...")
+
+                    # Use the AI-generated prompt as the quote
+                    ai_quote_text = content_idea.prompt
+                    ai_theme = content_idea.theme
+                    ai_caption = content_idea.caption
+
+                    # Download video and music if not in database
+                    logger.info(f"[{i+1}/{count}] Downloading video and music...")
+                    downloaded_content = self.content_downloader.download_content_for_idea(content_idea)
+
+                    if not downloaded_content["video_path"] or not downloaded_content["music_path"]:
+                        logger.error(f"[{i+1}/{count}] Failed to download required content")
+                        continue
+
+                    # Add downloaded content to database if not exists
+                    from src.database.models import Video, Music, Quote
+
+                    # Check/add video
+                    video_filename = downloaded_content["video_path"].name
+                    video_obj = self.session.query(Video).filter_by(filename=video_filename).first()
+                    if not video_obj:
+                        video_obj = Video(
+                            filename=video_filename,
+                            duration=30,
+                            resolution="1080x1920",
+                            tags=",".join(content_idea.video_search_terms),
+                            theme=ai_theme,
+                            source="youtube_auto"
+                        )
+                        self.session.add(video_obj)
+                        self.session.flush()
+                        logger.info(f"Added new video to database: {video_filename}")
+
+                    # Check/add music
+                    music_filename = downloaded_content["music_path"].name
+                    music_obj = self.session.query(Music).filter_by(filename=music_filename).first()
+                    if not music_obj:
+                        music_obj = Music(
+                            filename=music_filename,
+                            duration=30,
+                            bpm=150,
+                            energy_level="high",
+                            tags=",".join(content_idea.music_search_terms),
+                            source="youtube_auto"
+                        )
+                        self.session.add(music_obj)
+                        self.session.flush()
+                        logger.info(f"Added new music to database: {music_filename}")
+
+                    # Check/add quote
+                    quote_obj = self.session.query(Quote).filter_by(text=ai_quote_text).first()
+                    if not quote_obj:
+                        quote_obj = Quote(
+                            text=ai_quote_text,
+                            author="AI Generated",
+                            category=ai_theme,
+                            length=len(ai_quote_text)
+                        )
+                        self.session.add(quote_obj)
+                        self.session.flush()
+                        logger.info(f"Added new quote to database: {ai_quote_text[:50]}...")
+
+                    self.session.commit()
+
                 else:
-                    combination = self.content_selector.get_random_combination()
+                    ai_quote_text = None
+                    ai_theme = theme
+                    ai_caption = None
 
-                if not combination:
-                    logger.warning("Could not find valid content combination")
-                    continue
+                    # Select content (video/music based on theme) - old method
+                    if ai_theme or theme:
+                        combination = self.content_selector.find_matching_combination(theme=ai_theme or theme)
+                    else:
+                        combination = self.content_selector.get_random_combination()
 
-                logger.debug(f"[{i+1}/{count}] Selected content for theme: {combination.theme}")
+                    if not combination:
+                        logger.warning("Could not find valid content combination")
+                        continue
 
-                # Generate caption
-                caption = self.llm.generate(
-                    quote=combination.quote.text,
-                    theme=combination.theme,
-                    music_energy=combination.music.energy_level or "high"
-                )
+                    video_obj = combination.video
+                    music_obj = combination.music
+                    quote_obj = combination.quote
+
+                logger.debug(f"[{i+1}/{count}] Selected content for theme: {ai_theme or theme}")
+
+                # Use AI-generated quote if available, otherwise use database quote
+                final_quote = ai_quote_text if ai_quote_text else quote_obj.text
+
+                # Generate caption (use AI caption if available, otherwise generate)
+                if ai_caption:
+                    caption = ai_caption
+                    logger.info(f"[{i+1}/{count}] Using AI-generated caption")
+                else:
+                    caption = self.llm.generate(
+                        quote=final_quote,
+                        theme=ai_theme or theme or "motivation",
+                        music_energy=music_obj.energy_level or "high"
+                    )
 
                 # Generate video
                 logger.debug(f"[{i+1}/{count}] Generating video...")
                 from pathlib import Path
                 result = self.video_generator.generate(
-                    video_path=Path("data/raw/videos") / combination.video.filename,
-                    music_path=Path("data/raw/music") / combination.music.filename,
-                    quote=combination.quote.text,
+                    video_path=Path("data/raw/videos") / video_obj.filename,
+                    music_path=Path("data/raw/music") / music_obj.filename,
+                    quote=final_quote,
                     caption=caption
                 )
 
@@ -323,9 +419,9 @@ class BotOrchestrator:
 
                 # Save to database
                 generated_reel = reel_repo.create(
-                    video_id=combination.video.id,
-                    music_id=combination.music.id,
-                    quote_id=combination.quote.id,
+                    video_id=video_obj.id,
+                    music_id=music_obj.id,
+                    quote_id=quote_obj.id,
                     output_path=result["output_path"].as_posix(),
                     caption=caption,
                     status="pending",
@@ -334,22 +430,36 @@ class BotOrchestrator:
                     quality_score=result.get("quality_score", 0.8)
                 )
 
-                # Update usage counts
-                self.content_selector.update_usage_counts(combination)
+                # Update usage counts (only if not using AI downloader)
+                if not use_ai_prompt:
+                    self.content_selector.update_usage_counts(combination)
+                else:
+                    # Update usage counts manually for downloaded content
+                    video_obj.usage_count = (video_obj.usage_count or 0) + 1
+                    music_obj.usage_count = (music_obj.usage_count or 0) + 1
+                    quote_obj.usage_count = (quote_obj.usage_count or 0) + 1
+                    self.session.commit()
 
                 logger.info(f"[{i+1}/{count}] Reel #{generated_reel.id} generated successfully")
 
                 # Send preview to Telegram
                 if self.telegram_bot:
+                    preview_data = {
+                        "video_name": video_obj.filename,
+                        "music_name": music_obj.filename,
+                        "quote": final_quote,
+                        "caption": caption,
+                        "quality_score": generated_reel.quality_score
+                    }
+                    if use_ai_prompt:
+                        preview_data["ai_generated"] = True
+                        preview_data["theme"] = ai_theme
+                        preview_data["music_search_terms"] = content_idea.music_search_terms
+                        preview_data["video_search_terms"] = content_idea.video_search_terms
+
                     await self.telegram_bot.send_reel_preview(
                         generated_reel.id,
-                        {
-                            "video_name": combination.video.filename,
-                            "music_name": combination.music.filename,
-                            "quote": combination.quote.text,
-                            "caption": caption,
-                            "quality_score": generated_reel.quality_score
-                        }
+                        preview_data
                     )
 
                 results.append(

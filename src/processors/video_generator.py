@@ -111,26 +111,15 @@ class VideoGenerator:
         )
 
     def _build_video_filter(self) -> str:
-        """Build ffmpeg video filter chain for effects."""
-        vignette_angle = "PI/4"
-
+        """Build ffmpeg video filter chain for effects (simplified for minimal ffmpeg builds)."""
+        # Simplified version - scale and pad with proper color format
         return (
-            # Fit inside 1080x1920, center-pad
-            "scale=1080:1920:flags=lanczos:force_original_aspect_ratio=decrease,"
+            # Fit inside 1080x1920, center-pad with black bars
+            # Use format filter to ensure proper yuv420p before scaling
+            "format=yuv420p,"
+            "scale=1080:1920:force_original_aspect_ratio=decrease,"
             "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
-            # Black & white with contrast/brightness
-            f"eq=saturation=0:contrast={self.contrast}:brightness={self.brightness},format=gray,"
-            # Vignette
-            f"vignette=angle={vignette_angle},"
-            # Dizzy drift crop
-            f"crop=iw-{self.dizzy_crop_pad*2}:ih-{self.dizzy_crop_pad*2}:"
-            f"x={self.dizzy_crop_pad}+{self.dizzy_drift_amp}*sin(2*PI*t):"
-            f"y={self.dizzy_crop_pad}+{self.dizzy_drift_amp}*cos(2*PI*t),"
-            # Gentle wobble
-            f"rotate={self.dizzy_rot_amp}*sin(2*PI*t):fillcolor=black,"
-            # Soften and lock size
-            "boxblur=1:1,"
-            "scale=1080:1920:flags=lanczos"
+            "format=yuv420p"
         )
 
     def _build_audio_filter(self) -> str:
@@ -220,17 +209,19 @@ Dialogue: 0,0:00:00.30,9:59:59.00,BIG,,0000,0000,0000,,{{\\an2\\pos(540,1500)\\m
                 ass_path = Path(td) / "quote.ass"
                 self._make_ass_subtitle(quote, ass_path)
 
-                # FFmpeg command
+                # FFmpeg command - copy video stream, only process audio
+                logger.info("Combining video and music (no re-encoding)")
+                logger.info(f"Quote: {quote}")
+
                 cmd = [
                     "ffmpeg", "-y",
                     "-i", video_path.as_posix(),
                     "-i", music_path.as_posix(),
                     "-filter_complex",
-                    f"[0:v]{video_filter},ass='{ass_path.as_posix()}'[v];[1:a]{audio_filter}[a]",
-                    "-map", "[v]", "-map", "[a]",
-                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                    "-profile:v", "high", "-level", "4.1",
-                    "-preset", "medium", "-crf", "18",
+                    f"[1:a]{audio_filter}[a]",  # Only filter audio
+                    "-map", "0:v",  # Copy video stream as-is
+                    "-map", "[a]",  # Use filtered audio
+                    "-c:v", "copy",  # Copy video without re-encoding
                     "-c:a", "aac", "-b:a", "192k",
                     "-shortest",
                     output_path.as_posix()

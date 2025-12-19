@@ -30,8 +30,7 @@ logger = get_logger(__name__)
 
 
 class TelegramBot:
-    """Telegram bot controller for ShitPostBot automation."""
-
+      
     def __init__(self, orchestrator=None):
         """
         Initialize Telegram bot.
@@ -233,6 +232,30 @@ Use buttons below commands for quick actions.
             await update.message.reply_text("❌ Usage: /generate [count]")
         except Exception as e:
             logger.error(f"Generate error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+    async def post_now(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /post_now command - immediately publish a reel by ID, bypassing schedule."""
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            reel_id = int(context.args[0]) if context.args else None
+            if not reel_id:
+                await update.message.reply_text("❌ Usage: /post_now <reel_id>")
+                return
+
+            if not self.orchestrator:
+                await update.message.reply_text("⚠️ Orchestrator not available")
+                return
+
+            await update.message.reply_text(f"🚀 Publishing reel #{reel_id} now...", parse_mode=ParseMode.MARKDOWN)
+            await self.orchestrator.publish_reel_to_instagram(reel_id)
+            await update.message.reply_text(f"✅ Reel #{reel_id} published to Instagram!", parse_mode=ParseMode.MARKDOWN)
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid reel ID (must be a number)")
+        except Exception as e:
+            logger.error(f"Post now error: {e}")
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
     async def queue(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -869,6 +892,7 @@ Ready for approval?
         application.add_handler(CommandHandler("deleteschedule", self.deleteschedule))
         application.add_handler(CommandHandler("schedulepreview", self.schedulepreview))
         application.add_handler(CommandHandler("preview", self.preview))
+        application.add_handler(CommandHandler("post_now", self.post_now))
 
         # Add button callbacks
         application.add_handler(CallbackQueryHandler(self.button_approve, pattern="^approve_"))
