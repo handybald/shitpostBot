@@ -2,6 +2,7 @@
 LLM provider service for generating engaging captions.
 
 Supports:
+- Google Gemini API (Free tier, recommended)
 - OpenAI API (GPT-4o-mini, GPT-4, etc.)
 - Anthropic API (Claude, etc.)
 - Fallback template-based captions
@@ -12,6 +13,7 @@ Generates captions tailored to:
 - Instagram engagement best practices
 """
 
+import os
 import json
 from typing import Optional, Dict, Any
 from abc import ABC, abstractmethod
@@ -115,6 +117,71 @@ Requirements:
 Generate ONLY the caption, no explanations."""
 
 
+class GeminiGenerator(CaptionGenerator):
+    """Generate captions using Google Gemini API (free tier available)."""
+
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash"):
+        """
+        Initialize Gemini generator.
+
+        Args:
+            api_key: Google Gemini API key
+            model: Model name (default: gemini-2.5-flash for free tier)
+        """
+        try:
+            from google import genai
+            self.client = genai.Client(api_key=api_key)
+            self.model = model
+        except ImportError:
+            raise ImportError("google-genai package required. Install with: pip install google-genai")
+
+        logger.info(f"Initialized Gemini generator with model: {model}")
+
+    def generate(
+        self,
+        quote: str,
+        theme: str,
+        music_energy: Optional[str] = None,
+    ) -> str:
+        """Generate caption using Gemini."""
+        prompt = self._build_prompt(quote, theme, music_energy)
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt
+            )
+            caption = response.text.strip()
+            logger.info(f"Gemini caption generated ({len(caption)} chars)")
+            return caption
+
+        except Exception as e:
+            logger.error(f"Gemini generation failed: {e}")
+            raise
+
+    def _build_prompt(
+        self,
+        quote: str,
+        theme: str,
+        music_energy: Optional[str] = None,
+    ) -> str:
+        """Build prompt for caption generation."""
+        energy_desc = f" with {music_energy} energy phonk music" if music_energy else ""
+
+        return f"""Generate an engaging Instagram reel caption for a {theme} themed reel{energy_desc}.
+
+The reel features this quote: "{quote}"
+
+Requirements:
+- Under 150 characters total
+- Authentic, bold, and direct tone
+- Include 2-3 relevant hashtags (redpill/sigma/motivation style)
+- No fluff or corporate speak
+- Match the {theme} vibe (redpill, sigma mindset, brutal truth)
+
+Generate ONLY the caption, no explanations or quotation marks."""
+
+
 class AnthropicGenerator(CaptionGenerator):
     """Generate captions using Anthropic (Claude) API."""
 
@@ -192,19 +259,49 @@ class TemplateGenerator(CaptionGenerator):
 
     TEMPLATES = {
         "motivation": [
-            "🔥 {quote}\n\n💪 Your mindset determines your reality. What will you do today to level up?\n\n#Motivation #Mindset #Growth",
-            "✨ Remember: {quote}\n\n🚀 The only limit is the one you accept. Time to break through.\n\n#Inspiration #Success #Grind",
-            "💎 {quote}\n\n🎯 This is your sign. Take action. Create momentum.\n\n#Motivated #Unstoppable #Dreams",
+            "{quote} 💪 #Motivation #Mindset #Success",
+            "Real talk: {quote} 🔥 #RedPill #Truth #Growth",
+            "{quote} ⚡ #SigmaMindset #Hustle #Win",
+        ],
+        "redpill_reality": [
+            "{quote} 💊 #RedPill #Truth #RealityCheck",
+            "Facts: {quote} 🎯 #HardTruth #NoBS #Mindset",
+            "{quote} ⚡ #RedPilled #Woke #Success",
+        ],
+        "sigma_mindset": [
+            "{quote} 🐺 #SigmaMale #HighValue #Grindset",
+            "{quote} ⚡ #SigmaMindset #LonePath #Success",
+            "{quote} 💎 #Sigma #IndependentMindset #Boss",
         ],
         "philosophy": [
-            "🧠 {quote}\n\n💭 Deep thoughts for deep growth. What does this mean to you?\n\n#Philosophy #Wisdom #Reflection",
-            "🌌 {quote}\n\n✍️ Some truths hit different. Sit with this one.\n\n#Mindfulness #Wisdom #Truth",
-            "📖 {quote}\n\n🤔 The best philosophies make us see ourselves differently.\n\n#Philosophy #ThoughtProvoking #Growth",
+            "{quote} 🧠 #Philosophy #Wisdom #Truth",
+            "{quote} 💭 #Stoic #DeepThoughts #Mindset",
+            "{quote} 📖 #Philosophy #AncientWisdom #Growth",
+        ],
+        "stoic_philosophy": [
+            "{quote} 🏛️ #Stoicism #MarcusAurelius #Wisdom",
+            "{quote} ⚔️ #StoicMindset #InnerPeace #Strength",
+            "{quote} 🗿 #Stoic #Philosophy #Resilience",
         ],
         "hustle": [
-            "🏃‍♂️ {quote}\n\n⏰ No time for excuses. The grind waits for no one.\n\n#Hustle #Grind #NoExcuses",
-            "💼 {quote}\n\n🔥 While others sleep, you build. That's the difference.\n\n#Entrepreneur #HustleHard #Success",
-            "🎬 {quote}\n\n💪 Results speak louder than words. Keep pushing.\n\n#Dedicated #Results #GrindMode",
+            "{quote} 🔥 #Hustle #Grind #NoExcuses",
+            "{quote} 💼 #Entrepreneur #HustleHard #Success",
+            "{quote} 💪 #GrindMode #Results #Dedication",
+        ],
+        "monk_mode": [
+            "{quote} 🧘 #MonkMode #Focus #SelfDiscipline",
+            "{quote} 🎯 #DeepWork #NoDistractions #Growth",
+            "{quote} 🔇 #MonkMode #Isolation #Building",
+        ],
+        "financial_freedom": [
+            "{quote} 💰 #FinancialFreedom #Wealth #Money",
+            "{quote} 📈 #Investing #WealthBuilding #Freedom",
+            "{quote} 💵 #Finance #Entrepreneur #Rich",
+        ],
+        "self_improvement": [
+            "{quote} 📈 #SelfImprovement #Growth #BetterEveryDay",
+            "{quote} 🎯 #PersonalDevelopment #LevelUp #Success",
+            "{quote} 💎 #SelfGrowth #Transformation #Mindset",
         ],
     }
 
@@ -249,14 +346,30 @@ class LLMProvider:
         config = get_config_instance()
         llm_config = config.get("llm", {})
 
-        provider = llm_config.get("provider", "openai").lower()
+        provider = llm_config.get("provider", "gemini").lower()
         api_key = llm_config.get("api_key") or ""
         model = llm_config.get("model", "gpt-4o-mini")
         temperature = llm_config.get("caption_temperature", 0.8)
 
         generator = None
 
-        if provider == "openai":
+        # Try Gemini first (free tier recommended)
+        if provider == "gemini":
+            gemini_key = os.getenv("GEMINI_API_KEY") or api_key
+            if gemini_key and gemini_key != "your_gemini_api_key_here":
+                try:
+                    generator = GeminiGenerator(
+                        api_key=gemini_key,
+                        model="gemini-2.5-flash"
+                    )
+                    logger.info("Using Gemini as primary generator")
+                except ImportError:
+                    logger.warning("Gemini not available (install: pip install google-generativeai)")
+                except Exception as e:
+                    logger.warning(f"Gemini initialization failed: {e}")
+
+        # OpenAI fallback
+        elif provider == "openai":
             try:
                 generator = OpenAIGenerator(
                     api_key=api_key or "",
@@ -266,6 +379,8 @@ class LLMProvider:
                 logger.info("Using OpenAI as primary generator")
             except ImportError:
                 logger.warning("OpenAI not available, will use fallback")
+
+        # Anthropic option
         elif provider == "anthropic":
             try:
                 generator = AnthropicGenerator(
@@ -275,6 +390,16 @@ class LLMProvider:
                 logger.info("Using Anthropic as primary generator")
             except ImportError:
                 logger.warning("Anthropic not available, will use fallback")
+
+        # Auto-detect: try Gemini -> OpenAI -> Templates
+        if generator is None:
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if gemini_key and gemini_key != "your_gemini_api_key_here":
+                try:
+                    generator = GeminiGenerator(api_key=gemini_key)
+                    logger.info("Auto-selected Gemini as primary generator")
+                except:
+                    pass
 
         if generator is None:
             generator = TemplateGenerator()

@@ -13,9 +13,9 @@ telegram:
   enabled: true
 
 llm:
-  provider: "openai"  # openai or anthropic
-  api_key: ${OPENAI_API_KEY}
-  model: "gpt-4o-mini"
+  provider: "gemini"  # gemini (free), openai, or anthropic
+  api_key: ${GEMINI_API_KEY}
+  model: "gemini-2.5-flash"
   caption_temperature: 0.8
   max_tokens: 200
 
@@ -54,17 +54,54 @@ content:
     prefer_less_used: true
 
   themes:
-    - name: "motivation"
+    redpill_reality:
+      video_keywords: ["urban", "night", "city", "reality"]
+      music_keywords: ["aggressive", "phonk", "bass_heavy", "drift"]
+      music_energy: "high"
+      vibe: "brutal_truth"
+
+    sigma_mindset:
+      video_keywords: ["luxury", "lone_wolf", "success", "business"]
+      music_keywords: ["dark_phonk", "memphis", "atmospheric"]
+      music_energy: "high"
+      vibe: "independent"
+
+    stoic_philosophy:
+      video_keywords: ["nature", "solitude", "ancient", "meditation"]
+      music_keywords: ["ambient_phonk", "slow", "reverb"]
+      music_energy: "medium"
+      vibe: "wisdom"
+
+    monk_mode:
+      video_keywords: ["minimal", "focus", "isolation", "discipline"]
+      music_keywords: ["minimal_phonk", "lo-fi", "deep_bass"]
+      music_energy: "low"
+      vibe: "deep_focus"
+
+    financial_freedom:
+      video_keywords: ["luxury", "business", "money", "success"]
+      music_keywords: ["aggressive_phonk", "drift", "bass_heavy"]
+      music_energy: "high"
+      vibe: "wealth_mindset"
+
+    self_improvement:
+      video_keywords: ["gym", "workout", "growth", "transformation"]
+      music_keywords: ["aggressive", "phonk", "energetic"]
+      music_energy: "high"
+      vibe: "level_up"
+
+    # Legacy themes (kept for backward compatibility)
+    motivation:
       video_keywords: ["gym", "workout", "business", "success"]
       quote_keywords: ["success", "motivation", "achieve", "dream"]
       music_energy: "high"
 
-    - name: "philosophy"
+    philosophy:
       video_keywords: ["city", "night", "nature", "contemplation"]
       quote_keywords: ["wisdom", "life", "meaning", "philosophy"]
       music_energy: "medium"
 
-    - name: "hustle"
+    hustle:
       video_keywords: ["boxing", "training", "gym", "business"]
       quote_keywords: ["work", "grind", "hustle", "succeed"]
       music_energy: "high"
