@@ -8,7 +8,10 @@
       "Bash(pkill:*)",
       "Bash(timeout 8 python3:*)",
       "Bash(timeout 12 python3:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(timeout 30 ffmpeg:*)",
+      "Bash(\"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=black,format=yuv420p[vf];[1:a]aformat=sample_rates=44100[af]\" )",
+      "Bash(/tmp/test_reel.mp4)"
     ]
   }
 }

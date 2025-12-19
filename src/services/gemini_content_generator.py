@@ -176,6 +176,77 @@ Generate ONE powerful quote, nothing else:"""
             logger.error(f"Failed to generate redpill prompt: {e}")
             return self._fallback_redpill_prompt()
 
+    def generate_two_part_quote(self) -> Dict[str, str]:
+        """Generate a two-part quote: hook (4 sec) + payoff (remaining time).
+
+        Perfect for reels where first 3 seconds must grab attention.
+        Returns dict with 'hook' (4 seconds) and 'payoff' (6-9 seconds).
+        """
+        if not self.client:
+            return self._fallback_two_part_quote()
+
+        try:
+            # Vary the emphasis to get different types of hooks
+            hook_styles = [
+                "Something that seems obvious but people get wrong",
+                "A counterintuitive truth about how the world actually works",
+                "Something people are too afraid to say out loud",
+                "A shocking observation about human nature",
+                "A hidden reason why most people fail"
+            ]
+            hook_style = random.choice(hook_styles)
+
+            prompt = f"""Generate a two-part "redpill" quote for a short video reel (10-13 seconds total).
+
+DIVERSITY REQUIREMENT:
+Hook style should be: {hook_style}
+Make it ORIGINAL - not a recycled quote you've seen before.
+Avoid: "success is lonely", "most people are sheep", "discipline wins", "comfort kills you"
+
+Structure:
+1. HOOK (first part, 4 seconds): A provocative/curious statement that makes people stop scrolling
+   - 6-10 words
+   - Should make viewers curious for the payoff
+   - No complete thought, end with implied continuation
+   - MUST BE UNIQUE and not overused
+   - Examples: "Everything you know is wrong because...", "The truth they hide from you is...", "Most people are slaves and don't realize..."
+
+2. PAYOFF (second part, 6-9 seconds): The powerful truth/realization
+   - 15-25 words
+   - Must be profound and thought-provoking
+   - Completes the hook's promise
+   - Genuine insight, not buzzwords
+   - Examples: "...you're chasing someone else's dream instead of building your own empire", "...they profit from your ignorance and compliance"
+
+Format your response EXACTLY as JSON:
+{{
+    "hook": "Your hook text here",
+    "payoff": "Your payoff text here"
+}}
+
+Generate ONLY the JSON, nothing else."""
+
+            response = self.genai_client.models.generate_content(
+                model=self.model_name,
+                contents=prompt
+            )
+            
+            import json
+            response_text = response.text.strip()
+            # Extract JSON if wrapped in markdown code blocks
+            if "```json" in response_text:
+                response_text = response_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in response_text:
+                response_text = response_text.split("```")[1].split("```")[0].strip()
+            
+            data = json.loads(response_text)
+            logger.info(f"Generated two-part quote - Hook: {data['hook'][:40]}...")
+            return data
+
+        except Exception as e:
+            logger.error(f"Failed to generate two-part quote: {e}")
+            return self._fallback_two_part_quote()
+
     def suggest_phonk_music_vibe(self, theme: str) -> Dict[str, Any]:
         """
         Suggest phonk music characteristics for the theme.
@@ -231,13 +302,28 @@ Generate ONE powerful quote, nothing else:"""
         """Build comprehensive generation prompt for Gemini."""
         theme = theme or random.choice(self.CONTENT_THEMES)
 
+        # Add variation instruction to avoid repeated quotes
+        variation_instructions = [
+            "Be VERY CREATIVE and ORIGINAL - avoid common motivational clichés.",
+            "Create something UNIQUE - not the typical 'hustle' or 'grind' quotes everyone uses.",
+            "Generate FRESH insight - challenge common beliefs in an unexpected way.",
+            "Write CONTROVERSIAL yet thoughtful - provoke real thinking, not just agreement.",
+            "Create something SPECIFIC and CONCRETE - avoid generic 'success' platitudes."
+        ]
+        variation_hint = random.choice(variation_instructions)
+
         return f"""Generate a complete Instagram Reel content package for a {style} post.
 
 Theme: {theme}
 Style: {style}
 
+CRITICAL REQUIREMENT FOR VARIETY:
+{variation_hint}
+Do NOT generate quotes similar to: "success is lonely", "comfort kills ambition", "everyone else is wrong", "discipline wins".
+Generate something FRESH and SPECIFIC to this theme.
+
 Generate a JSON response with:
-1. "prompt": A powerful 10-15 word quote/truth bomb (redpill style, no fluff)
+1. "prompt": A powerful 10-15 word quote/truth bomb (redpill style, no fluff, MUST BE ORIGINAL)
 2. "caption": Instagram caption under 150 chars with 2-3 hashtags
 3. "theme": The theme category
 4. "music_vibe": Phonk music style description
@@ -247,13 +333,20 @@ Generate a JSON response with:
 8. "video_search_terms": Array of 3-5 search terms to find the perfect background video (e.g., ["night city drive 4k", "tokyo drift aesthetic", "urban cyberpunk"])
 
 Requirements:
-- Quote must be POWERFUL and thought-provoking
+- Quote must be POWERFUL, ORIGINAL, and thought-provoking
 - Caption should be authentic and engaging
-- Focus on hard truths, not generic motivation
-- Sigma/high-value mindset
+- Focus on hard truths that aren't overused
+- Avoid generic "sigma mindset" buzzwords
 - No cringe or corporate speak
-- Music search terms should be specific phonk subgenres or popular track styles
-- Video search terms should be specific, searchable on YouTube/stock sites
+- Music search terms should be DIVERSE and specific (mix of genres, moods, styles - not just phonk)
+  * Include varied genres: phonk, trap, lofi, hip hop, instrumental, electronic, etc.
+  * Different moods: aggressive, calm, inspirational, dark, uplifting
+  * Real searchable terms that will return different results each time
+- Video search terms should be DIVERSE and specific, searchable on YouTube/stock sites
+  * Vary the aesthetic: urban, nature, luxury, minimal, action, abstract, etc.
+  * Different locations and scenes
+  * Mix lighting: night, daylight, neon, sunset, rain, etc.
+- CRITICAL: Generate quotes that feel FRESH and UNIQUE, not recycled wisdom
 
 Output ONLY valid JSON, no explanations:"""
 
@@ -301,9 +394,85 @@ Output ONLY valid JSON, no explanations:"""
             "The lion doesn't concern himself with the opinions of sheep",
             "Mediocrity is a choice, excellence is earned",
             "Comfort zones are where dreams go to die",
-            "The successful do what the unsuccessful won't"
+            "The successful do what the unsuccessful won't",
+            "You're not behind, you're just not finished yet",
+            "Comparison is the thief of your own journey",
+            "The system rewards action, not intention",
+            "Your network determines your net worth",
+            "Most dreams die between the idea and the attempt",
+            "Patience is not inaction, it's strategic waiting",
+            "Fear is just data telling you something matters",
+            "Your past does not equal your future",
+            "Money is just concentrated attention and effort",
+            "Boredom is a sign you're not growing anymore"
         ]
         return random.choice(prompts)
+
+    def _fallback_two_part_quote(self) -> Dict[str, str]:
+        """Fallback two-part quotes when API is unavailable."""
+        two_part_quotes = [
+            {
+                "hook": "They don't want you to know this because...",
+                "payoff": "...once you understand it, you can't be controlled. Real power comes from seeing the world as it is, not as they want you to see it."
+            },
+            {
+                "hook": "Everyone thinks success requires luck, but the truth is...",
+                "payoff": "...luck is just preparation meeting opportunity. While 99% wait for the perfect moment, the 1% create their own reality through relentless action."
+            },
+            {
+                "hook": "Your biggest competition isn't the guy next to you...",
+                "payoff": "...it's the guy you were yesterday. The only race that matters is becoming your highest self. Everything else is just noise."
+            },
+            {
+                "hook": "They say money doesn't matter, but deep down they know...",
+                "payoff": "...freedom is built on a foundation of financial independence. Without it, you're just another worker bee in someone else's hive."
+            },
+            {
+                "hook": "Most people will never understand what separates winners from losers...",
+                "payoff": "...it's not talent, it's the willingness to do what others won't when others are sleeping. Consistency over intensity, always."
+            },
+            {
+                "hook": "The system isn't broken, it's working exactly as designed...",
+                "payoff": "...to keep you dependent and obedient. Real freedom requires you to break the mold and build your own path."
+            },
+            {
+                "hook": "Your comfort zone is slowly killing your potential because...",
+                "payoff": "...growth only happens at the edge of what scares you. The more uncomfortable the journey, the more valuable the destination."
+            },
+            {
+                "hook": "Everyone has the same 24 hours but only the elite use them differently...",
+                "payoff": "...they don't waste time on distractions. They're obsessed with progress, addicted to improvement, and allergic to mediocrity."
+            },
+            {
+                "hook": "You think you're not ready, but reality is...",
+                "payoff": "...readiness is a myth. The people who win started before they felt ready. Confidence comes from action, not preparation."
+            },
+            {
+                "hook": "Most people sabotage themselves without knowing it because...",
+                "payoff": "...mediocrity is comfortable. The pain of growth scares them more than the pain of regret. You have to choose which pain you'll accept."
+            },
+            {
+                "hook": "Social media shows you everyone's best life but hides...",
+                "payoff": "...the struggles that made them. Don't compare your reality to someone else's highlight reel. Your only competition is yesterday's version of you."
+            },
+            {
+                "hook": "People say follow your passion, but that's incomplete advice because...",
+                "payoff": "...passion without discipline is just a hobby. Real wealth comes from doing what's valuable, not just what feels good."
+            },
+            {
+                "hook": "Your biggest fear isn't failure, it's actually...",
+                "payoff": "...success. Because success demands you become someone new. Most people choose the familiar pain over the uncomfortable transformation."
+            },
+            {
+                "hook": "Education doesn't cost money, ignorance does, because...",
+                "payoff": "...every wrong decision based on lack of knowledge costs you time and opportunity. Your greatest investment is in understanding how things actually work."
+            },
+            {
+                "hook": "You're waiting for permission that will never come because...",
+                "payoff": "...no one is going to hand you success. The people who matter are too busy building their own empires to care about stopping you."
+            }
+        ]
+        return random.choice(two_part_quotes)
 
     def _fallback_content_idea(
         self,
@@ -321,20 +490,84 @@ Output ONLY valid JSON, no explanations:"""
             f"Facts: {prompt} 🎯 #SigmaMindset #HighValue #Boss"
         ]
 
-        # Fallback music and video search terms
+        # Fallback music and video search terms - EXPANDED for diversity
         music_searches = {
-            "redpill_reality": ["aggressive phonk", "drift phonk bass", "brazilian phonk"],
-            "sigma_mindset": ["dark phonk", "memphis phonk", "sigma phonk"],
-            "stoic_philosophy": ["ambient phonk", "chill phonk beats", "lo-fi phonk"],
-            "monk_mode": ["minimal phonk", "deep phonk", "focus phonk"]
+            "redpill_reality": [
+                "aggressive phonk", "drift phonk bass", "brazilian phonk",
+                "hard trap beats", "dark trap instrumental", "boom bap hip hop"
+            ],
+            "sigma_mindset": [
+                "dark phonk", "memphis phonk", "sigma phonk",
+                "underground trap", "chicago footwork", "memphis blues"
+            ],
+            "stoic_philosophy": [
+                "ambient phonk", "chill phonk beats", "lo-fi phonk",
+                "ambient electronic", "meditation music", "zen instrumental"
+            ],
+            "monk_mode": [
+                "minimal phonk", "deep phonk", "focus phonk",
+                "lo-fi hip hop", "study beats", "focus music"
+            ],
+            "financial_freedom": [
+                "aggressive beats", "motivational hip hop", "success soundtrack",
+                "power music", "gym beats", "pump up music"
+            ],
+            "self_improvement": [
+                "inspirational instrumental", "epic strings", "cinematic music",
+                "dramatic orchestral", "powerful soundtrack", "hero music"
+            ],
+            "brutal_truth": [
+                "heavy bass trap", "dark music", "intense beat",
+                "aggressive instrumental", "raw beats", "street music"
+            ],
+            "high_value_mindset": [
+                "luxury beats", "premium music", "classy instrumental",
+                "sophisticated jazz", "smooth trap", "elite music"
+            ]
         }
 
         video_searches = {
-            "redpill_reality": ["night city drive 4k", "urban aesthetic", "cyberpunk city"],
-            "sigma_mindset": ["luxury lifestyle", "supercar driving", "business success"],
-            "stoic_philosophy": ["nature solitude 4k", "meditation visuals", "ancient architecture"],
-            "monk_mode": ["minimal aesthetic", "focus visuals", "monochrome abstract"]
+            "redpill_reality": [
+                "night city drive 4k", "urban aesthetic", "cyberpunk city",
+                "tokyo night drive", "street racing", "city lights at night"
+            ],
+            "sigma_mindset": [
+                "luxury lifestyle", "supercar driving", "business success",
+                "rich lifestyle", "exotic cars", "mansion interior"
+            ],
+            "stoic_philosophy": [
+                "nature solitude 4k", "meditation visuals", "ancient architecture",
+                "mountain scenery", "peaceful lake", "zen garden"
+            ],
+            "monk_mode": [
+                "minimal aesthetic", "focus visuals", "monochrome abstract",
+                "empty room", "library", "calm workspace"
+            ],
+            "financial_freedom": [
+                "money and success", "business office", "stock market",
+                "financial growth", "entrepreneur lifestyle", "wealth symbols"
+            ],
+            "self_improvement": [
+                "gym training", "meditation practice", "personal growth",
+                "healthy lifestyle", "motivation montage", "sports training"
+            ],
+            "brutal_truth": [
+                "dark aesthetic", "urban grit", "raw reality",
+                "street life", "hard truth", "reality check"
+            ],
+            "high_value_mindset": [
+                "premium lifestyle", "luxury brands", "exclusive club",
+                "first class", "vip treatment", "high society"
+            ]
         }
+
+        # Randomly pick from available search terms for this theme (for diversity)
+        theme_music_terms = music_searches.get(theme, ["phonk music", "bass boosted"])
+        theme_video_terms = video_searches.get(theme, ["aesthetic video", "4k background"])
+
+        # Select random subset of search terms to ensure variety across runs
+        selected_music_terms = random.sample(theme_music_terms, min(3, len(theme_music_terms)))
+        selected_video_terms = random.sample(theme_video_terms, min(3, len(theme_video_terms)))
 
         return ContentSuggestion(
             prompt=prompt,
@@ -343,8 +576,8 @@ Output ONLY valid JSON, no explanations:"""
             music_vibe=random.choice(self.PHONK_VIBES),
             video_style=random.choice(self.VIDEO_STYLES),
             hashtags=["#Motivation", "#Mindset", "#Success"],
-            music_search_terms=music_searches.get(theme, ["phonk music", "bass boosted"]),
-            video_search_terms=video_searches.get(theme, ["aesthetic video", "4k background"])
+            music_search_terms=selected_music_terms,
+            video_search_terms=selected_video_terms
         )
 
 

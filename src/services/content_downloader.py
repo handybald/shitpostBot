@@ -93,8 +93,9 @@ class ContentDownloader:
                 params = {
                     "query": search_term,
                     "orientation": "portrait",  # Vertical for Instagram
-                    "size": "medium",
-                    "per_page": 10
+                    "size": "large",  # Download large/HD resolution to avoid scaling artifacts
+                    "per_page": 20,  # Get more results to ensure diversity
+                    "page": random.randint(1, 3)  # Randomize which page of results we fetch from
                 }
 
                 response = requests.get(url, headers=headers, params=params, timeout=15)
@@ -110,21 +111,46 @@ class ContentDownloader:
                     logger.warning(f"No videos found for: {search_term}")
                     continue
 
-                # Get random video from results
-                video = random.choice(data["videos"][:5])  # Pick from top 5
+                # Diversify video selection: take from middle of results for variety
+                # Using top 10-20 range helps avoid always picking the top 1-2 results
+                available_videos = data["videos"]
+                if len(available_videos) > 15:
+                    # Shuffle and pick from a diverse range, not always the top ranked
+                    candidate_videos = available_videos[5:15]  # Skip top results, get middle range
+                elif len(available_videos) > 5:
+                    candidate_videos = available_videos[:10]
+                else:
+                    candidate_videos = available_videos
 
-                # Find best portrait video file (HD, vertical)
+                if len(candidate_videos) > 1:
+                    # Random selection from diverse pool
+                    video = random.choice(candidate_videos)
+                else:
+                    video = candidate_videos[0]
+
+                # Find best portrait video file - prioritize FULL HD (1080p+) vertical
                 video_file = None
+                best_video = None
+
                 for file in video["video_files"]:
                     height = file.get("height", 0)
                     width = file.get("width", 0)
-                    # Look for portrait orientation (height > width) and HD quality
-                    if height >= 720 and width < height:
-                        video_file = file
-                        break
+                    # Look for portrait orientation (height > width)
+                    if width < height:
+                        # Prioritize 1080p+ (for Instagram Reels)
+                        if height >= 1080:
+                            video_file = file
+                            break
+                        # Fallback to any HD video
+                        elif height >= 720 and best_video is None:
+                            best_video = file
+
+                # Use best HD video if full HD not found
+                if not video_file and best_video:
+                    video_file = best_video
 
                 if not video_file:
-                    # Fallback to first available file
+                    # Last resort fallback to first available file
                     video_file = video["video_files"][0] if video["video_files"] else None
 
                 if not video_file:
@@ -139,6 +165,39 @@ class ContentDownloader:
                     output_path.write_bytes(video_response.content)
                     size_mb = len(video_response.content) / 1024 / 1024
                     logger.info(f"✅ Downloaded video: {output_filename} ({size_mb:.1f} MB)")
+
+                    # Re-encode to fix interlacing/corruption issues from source
+                    logger.info(f"Normalizing video encoding to fix corruption...")
+                    try:
+                        import subprocess
+                        import tempfile
+
+                        with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tf:
+                            temp_path = Path(tf.name)
+
+                        # Re-encode with strong deinterlacing to fix Vimeo artifacts
+                        cmd = [
+                            "ffmpeg", "-y",
+                            "-i", output_path.as_posix(),
+                            "-vf", "yadif=mode=send_frame:parity=auto",
+                            "-c:v", "libx264",
+                            "-crf", "18",
+                            "-pix_fmt", "yuv420p",
+                            "-c:a", "aac",
+                            "-loglevel", "error",
+                            temp_path.as_posix()
+                        ]
+
+                        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, check=True)
+
+                        # Replace original with cleaned version
+                        import shutil
+                        shutil.move(temp_path.as_posix(), output_path.as_posix())
+                        logger.info(f"✅ Video normalized: {output_filename}")
+
+                    except Exception as e:
+                        logger.warning(f"Could not normalize video, using as-is: {e}")
+
                     return output_path
                 else:
                     logger.warning(f"Failed to download video file: {video_response.status_code}")

@@ -83,7 +83,7 @@ class GeneratedReel(Base):
     id = Column(Integer, primary_key=True)
     video_id = Column(Integer, ForeignKey("videos.id"), nullable=False)
     music_id = Column(Integer, ForeignKey("music.id"), nullable=False)
-    quote_id = Column(Integer, ForeignKey("quotes.id"), nullable=False)
+    quote_id = Column(Integer, ForeignKey("quotes.id"), nullable=True)  # Nullable for two-part quotes
 
     output_path = Column(String(500), nullable=False)  # local file path
     caption = Column(Text)  # AI-generated caption
