@@ -209,8 +209,36 @@ class PublishedPostRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def create(self, reel_id: int, instagram_media_id: str = None, **kwargs):
-        post = PublishedPost(reel_id=reel_id, instagram_media_id=instagram_media_id, **kwargs)
+    def create(self, reel_id: int, instagram_media_id: str = None, caption: str = None, s3_url: str = None, **kwargs):
+        """Create or update a published post record.
+
+        If a PublishedPost already exists for the given reel_id, update it
+        instead of inserting a duplicate (avoids UNIQUE constraint failures).
+        """
+        # Try to find existing post by reel_id
+        existing = self.session.query(PublishedPost).filter(PublishedPost.reel_id == reel_id).first()
+        if existing:
+            # Update fields
+            if instagram_media_id is not None:
+                existing.instagram_media_id = instagram_media_id
+            if caption is not None:
+                existing.caption = caption
+            if s3_url is not None:
+                existing.s3_url = s3_url
+            # Allow other kwargs to update additional columns
+            for k, v in kwargs.items():
+                if hasattr(existing, k):
+                    setattr(existing, k, v)
+            self.session.commit()
+            return existing
+
+        post = PublishedPost(
+            reel_id=reel_id,
+            instagram_media_id=instagram_media_id,
+            caption=caption,
+            s3_url=s3_url,
+            **kwargs
+        )
         self.session.add(post)
         self.session.commit()
         return post

@@ -9,15 +9,15 @@ CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "config.yaml"
 
 
 def substitute_env_vars(value: Any) -> Any:
-    """Recursively substitute ${VAR} with environment variables"""
+    """Recursively substitute ${VAR} or ${VAR:default} with environment variables"""
     if isinstance(value, str):
-        # Replace ${VAR} with os.getenv("VAR", "")
+        # Replace ${VAR} or ${VAR:default} with os.getenv("VAR", "default")
         import re
-        pattern = r'\$\{([^}]+)\}'
+        pattern = r'\$\{([^:}]+)(?::([^}]*))?\}'
         matches = re.findall(pattern, value)
-        for match in matches:
-            env_value = os.getenv(match, f"${{{match}}}")
-            value = value.replace(f"${{{match}}}", str(env_value))
+        for var_name, default_value in matches:
+            env_value = os.getenv(var_name, default_value if default_value else f"${{{var_name}}}")
+            value = value.replace(f"${{{var_name}{':{}'.format(default_value) if default_value else ''}}}", str(env_value))
 
         # Try to convert to int if it looks like a number
         try:
