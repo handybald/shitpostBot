@@ -143,6 +143,7 @@ class PublishedPost(Base):
     instagram_media_id = Column(String(255), unique=True)
     instagram_url = Column(String(500))
     caption = Column(Text)
+    s3_url = Column(String(500))
 
     published_at = Column(DateTime, default=datetime.utcnow)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -19,6 +19,10 @@ llm:
   caption_temperature: 0.8
   max_tokens: 200
 
+aws:
+  s3_bucket_name: ${S3_BUCKET_NAME}
+  region: ${AWS_REGION:us-east-1}
+
 video:
   output_dir: "data/output"
   font_name: "Impact"

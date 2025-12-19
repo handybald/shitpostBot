@@ -71,6 +71,7 @@ class InstagramService:
         local_path: Path,
         bucket: str,
         region: str = "us-east-1",
+        s3_key: Optional[str] = None,
         expires: int = 3600
     ) -> str:
         """
@@ -80,31 +81,35 @@ class InstagramService:
             local_path: Path to local video file
             bucket: S3 bucket name
             region: AWS region
+            s3_key: Custom S3 key (default: reels/{filename})
             expires: URL expiration in seconds
 
         Returns:
             Presigned S3 URL
         """
         s3 = boto3.client("s3", region_name=region)
-        key = f"reels/{local_path.name}"
+        
+        # Use custom key or default to reels/ directory
+        if s3_key is None:
+            s3_key = f"reels/{local_path.name}"
 
-        logger.info(f"Uploading {local_path.name} to S3 bucket {bucket}")
+        logger.info(f"Uploading {local_path.name} to S3 bucket {bucket} as {s3_key}")
 
         try:
             s3.upload_file(
                 local_path.as_posix(),
                 bucket,
-                key,
+                s3_key,
                 ExtraArgs={"ContentType": "video/mp4"}
             )
-            logger.info(f"S3 upload complete: {key}")
+            logger.info(f"S3 upload complete: {s3_key}")
         except (BotoCoreError, ClientError) as e:
             logger.error(f"S3 upload failed: {e}")
             raise
 
         url = s3.generate_presigned_url(
             ClientMethod="get_object",
-            Params={"Bucket": bucket, "Key": key},
+            Params={"Bucket": bucket, "Key": s3_key},
             ExpiresIn=expires,
         )
         return url

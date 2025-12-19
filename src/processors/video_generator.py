@@ -209,19 +209,22 @@ Dialogue: 0,0:00:00.30,9:59:59.00,BIG,,0000,0000,0000,,{{\\an2\\pos(540,1500)\\m
                 ass_path = Path(td) / "quote.ass"
                 self._make_ass_subtitle(quote, ass_path)
 
-                # FFmpeg command - copy video stream, only process audio
-                logger.info("Combining video and music (no re-encoding)")
+                # FFmpeg command - apply video effects and subtitle overlay
+                logger.info("Combining video, music, and text overlay")
                 logger.info(f"Quote: {quote}")
 
+                # Build complete filter: video effects + subtitle overlay + audio processing
+                video_with_sub = f"[0:v]{video_filter},ass={ass_path.as_posix().replace(':', '\\\\:').replace('\\\\', '/')}[v]"
+                
                 cmd = [
                     "ffmpeg", "-y",
                     "-i", video_path.as_posix(),
                     "-i", music_path.as_posix(),
                     "-filter_complex",
-                    f"[1:a]{audio_filter}[a]",  # Only filter audio
-                    "-map", "0:v",  # Copy video stream as-is
+                    f"{video_with_sub};[1:a]{audio_filter}[a]",
+                    "-map", "[v]",  # Use filtered video with text overlay
                     "-map", "[a]",  # Use filtered audio
-                    "-c:v", "copy",  # Copy video without re-encoding
+                    "-c:v", "libx264", "-preset", "medium", "-crf", "23",
                     "-c:a", "aac", "-b:a", "192k",
                     "-shortest",
                     output_path.as_posix()

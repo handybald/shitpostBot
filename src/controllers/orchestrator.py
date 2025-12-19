@@ -22,8 +22,10 @@ from apscheduler.triggers.cron import CronTrigger
 from src.utils.logger import get_logger
 from src.utils.config_loader import get_config_instance
 from src.database import get_session
+from src.database.models import PublishedPost
 from src.database.repositories import (
     GeneratedReelRepository, ScheduledPostRepository,
+    PublishedPostRepository,
     ContentCalendarRepository, JobRepository
 )
 from src.processors import ContentSelector, VideoGenerator, QualityChecker
@@ -521,32 +523,97 @@ class BotOrchestrator:
             session.close()
 
     async def publish_reel_to_instagram(self, reel_id: int) -> None:
-        """Publish a reel to Instagram."""
+        """Publish a reel to Instagram using Graph API with S3 storage."""
         session = get_session()
         try:
             reel_repo = GeneratedReelRepository(session)
+            pub_repo = PublishedPostRepository(session)
+            
             reel = reel_repo.get_by_id(reel_id)
 
             if not reel:
                 logger.error(f"Reel #{reel_id} not found")
                 return
 
-            logger.info(f"Publishing reel #{reel_id} to Instagram...")
+            # Check if already published
+            existing_pub = session.query(PublishedPost).filter_by(reel_id=reel_id).first()
+            if existing_pub:
+                logger.warning(f"Reel #{reel_id} already published (media_id: {existing_pub.instagram_media_id})")
+                if self.telegram_bot:
+                    await self.telegram_bot.send_notification(
+                        f"⚠️ Reel #{reel_id} was already published\nMedia ID: {existing_pub.instagram_media_id}",
+                        level="info"
+                    )
+                return
 
-            # Upload video to S3 and get presigned URL
-            # (In production, this would upload to S3)
+            logger.info(f"Publishing reel #{reel_id} to Instagram via Graph API...")
+
             video_path = Path(reel.output_path)
             if not video_path.exists():
                 logger.error(f"Video file not found: {video_path}")
                 return
 
-            # For demo, log instead of actual publish
-            logger.info(f"Would upload reel to S3 and publish")
-            # media_id = self.instagram.publish_reel(
-            #     video_url=s3_url,
-            #     caption=reel.caption,
-            #     video_path=video_path
-            # )
+            # Get config
+            config = get_config_instance()
+            s3_bucket = config.get("aws.s3_bucket_name")
+            s3_region = config.get("aws.region", "us-east-1")
+            
+            if not s3_bucket:
+                logger.error("S3 bucket not configured")
+                if self.telegram_bot:
+                    await self.telegram_bot.send_notification(
+                        "❌ S3 bucket not configured. Add AWS credentials to .env",
+                        level="error"
+                    )
+                return
+
+            from src.services import InstagramService
+            instagram = InstagramService.from_config()
+            
+            # Upload to S3 reels/ directory
+            s3_key = f"reels/{video_path.name}"
+            logger.info(f"Uploading to S3: s3://{s3_bucket}/{s3_key}")
+            
+            s3_url = instagram.s3_upload_and_presign(
+                local_path=video_path,
+                bucket=s3_bucket,
+                region=s3_region,
+                s3_key=s3_key,
+                expires=7200
+            )
+            
+            logger.info(f"S3 upload complete: {s3_url}")
+            logger.info(f"Publishing to Instagram via Graph API...")
+            
+            # Publish using Graph API
+            media_id = instagram.publish_reel(
+                video_url=s3_url,
+                caption=reel.caption,
+                video_path=video_path,
+                poll_seconds=10,
+                max_polls=60
+            )
+            
+            logger.info(f"✅ Reel #{reel_id} published successfully (media_id: {media_id})")
+
+            # Save to database
+            pub_repo.create(
+                reel_id=reel_id,
+                instagram_media_id=media_id,
+                caption=reel.caption,
+                s3_url=f"s3://{s3_bucket}/{s3_key}"
+            )
+            
+            # Update reel status
+            reel_repo.update_status(reel_id, "published")
+
+            if self.telegram_bot:
+                await self.telegram_bot.send_notification(
+                    f"✅ Reel #{reel_id} published to Instagram!\n"
+                    f"Media ID: {media_id}\n"
+                    f"S3: s3://{s3_bucket}/{s3_key}",
+                    level="success"
+                )
 
             logger.info(f"✅ Reel #{reel_id} published successfully")
 
