@@ -432,15 +432,17 @@ class BotOrchestrator:
                     quality_score=result.get("quality_score", 0.8)
                 )
 
-                # Update usage counts (only if not using AI downloader)
-                if not use_ai_prompt:
-                    self.content_selector.update_usage_counts(combination)
-                else:
-                    # Update usage counts manually for downloaded content
-                    video_obj.usage_count = (video_obj.usage_count or 0) + 1
-                    music_obj.usage_count = (music_obj.usage_count or 0) + 1
-                    quote_obj.usage_count = (quote_obj.usage_count or 0) + 1
-                    self.session.commit()
+                # Update usage counts for all content
+                video_obj.usage_count = (video_obj.usage_count or 0) + 1
+                video_obj.last_used_at = datetime.utcnow()
+
+                music_obj.usage_count = (music_obj.usage_count or 0) + 1
+                music_obj.last_used_at = datetime.utcnow()
+
+                quote_obj.usage_count = (quote_obj.usage_count or 0) + 1
+                quote_obj.last_used_at = datetime.utcnow()
+
+                self.session.commit()
 
                 logger.info(f"[{i+1}/{count}] Reel #{generated_reel.id} generated successfully")
 
@@ -481,6 +483,190 @@ class BotOrchestrator:
                     )
 
         logger.info(f"Generated {len(results)} reels successfully")
+        return results
+
+    async def generate_two_part_content(self, count: int = 1, theme: Optional[str] = None) -> List[Dict]:
+        """
+        Generate N content reels with two-part quotes (hook + payoff).
+
+        Perfect for TikTok/Reels: eye-catching hook (4s) + powerful payoff
+        
+        Args:
+            count: Number of reels to generate
+            theme: Optional theme (motivation, philosophy, hustle)
+
+        Returns:
+            List of generated reel metadata
+        """
+        logger.info(f"Generating {count} two-part reels (theme: {theme})")
+
+        results = []
+        reel_repo = GeneratedReelRepository(self.session)
+
+        for i in range(count):
+            try:
+                # Generate AI-powered two-part quote
+                logger.info(f"[{i+1}/{count}] Generating AI-powered two-part quote...")
+                quote_data = self.gemini_generator.generate_two_part_quote()
+                hook = quote_data.get("hook", "")
+                payoff = quote_data.get("payoff", "")
+                
+                logger.info(f"[{i+1}/{count}] Hook: {hook[:40]}...")
+                logger.info(f"[{i+1}/{count}] Payoff: {payoff[:40]}...")
+
+                # Generate AI content idea for video/music selection
+                logger.info(f"[{i+1}/{count}] Generating content idea for video/music...")
+                content_idea = self.gemini_generator.generate_content_idea(
+                    theme=theme,
+                    style="redpill_motivational"
+                )
+
+                # Create caption from payoff
+                caption = payoff[:150]
+
+                # Download video and music
+                logger.info(f"[{i+1}/{count}] Downloading video and music...")
+                downloaded_content = self.content_downloader.download_content_for_idea(content_idea)
+
+                if not downloaded_content["video_path"] or not downloaded_content["music_path"]:
+                    logger.error(f"[{i+1}/{count}] Failed to download required content")
+                    continue
+
+                # Add downloaded content to database if not exists
+                from src.database.models import Video, Music, Quote
+
+                # Check/add video
+                video_filename = downloaded_content["video_path"].name
+                video_obj = self.session.query(Video).filter_by(filename=video_filename).first()
+                if not video_obj:
+                    video_obj = Video(
+                        filename=video_filename,
+                        duration=30,
+                        resolution="1080x1920",
+                        tags=",".join(content_idea.video_search_terms),
+                        theme=content_idea.theme,
+                        source="youtube_auto"
+                    )
+                    self.session.add(video_obj)
+                    self.session.flush()
+                    logger.info(f"Added new video to database: {video_filename}")
+
+                # Check/add music
+                music_filename = downloaded_content["music_path"].name
+                music_obj = self.session.query(Music).filter_by(filename=music_filename).first()
+                if not music_obj:
+                    music_obj = Music(
+                        filename=music_filename,
+                        duration=30,
+                        bpm=150,
+                        energy_level="high",
+                        tags=",".join(content_idea.music_search_terms),
+                        source="youtube_auto"
+                    )
+                    self.session.add(music_obj)
+                    self.session.flush()
+                    logger.info(f"Added new music to database: {music_filename}")
+
+                # Generate two-part video
+                logger.debug(f"[{i+1}/{count}] Generating two-part video...")
+                from pathlib import Path
+                result = self.video_generator.generate_two_part(
+                    video_path=Path("data/raw/videos") / video_obj.filename,
+                    music_path=Path("data/raw/music") / music_obj.filename,
+                    hook=hook,
+                    payoff=payoff,
+                    caption=caption
+                )
+
+                # Check quality
+                is_ok = self.quality_checker.is_acceptable(
+                    result["output_path"],
+                    min_quality_score=self.config.get("content.generation.quality_threshold", 0.75)
+                )
+
+                if not is_ok:
+                    logger.warning(f"Generated video failed quality check")
+                    continue
+
+                # Create Quote record with merged hook+payoff text
+                logger.debug(f"[{i+1}/{count}] Creating quote record...")
+                from src.database.models import Quote
+                merged_quote_text = f"{hook} {payoff}"
+                quote_obj = self.session.query(Quote).filter(Quote.text == merged_quote_text).first()
+                if not quote_obj:
+                    quote_obj = Quote(
+                        text=merged_quote_text,
+                        category="two_part_reel",
+                        length=len(merged_quote_text)
+                    )
+                    self.session.add(quote_obj)
+                    self.session.flush()
+                    logger.debug(f"Created new quote record: {quote_obj.id}")
+                else:
+                    logger.debug(f"Using existing quote record: {quote_obj.id}")
+
+                # Save to database
+                logger.debug(f"[{i+1}/{count}] Saving reel to database...")
+                generated_reel = reel_repo.create(
+                    video_id=video_obj.id,
+                    music_id=music_obj.id,
+                    quote_id=quote_obj.id,
+                    output_path=str(result["output_path"]),
+                    caption=caption,
+                    duration=result["duration"],
+                    file_size=result["file_size"],
+                    quality_score=result.get("quality_score", 0.8)
+                )
+
+                # Update usage counts for all content
+                video_obj.usage_count = (video_obj.usage_count or 0) + 1
+                video_obj.last_used_at = datetime.utcnow()
+
+                music_obj.usage_count = (music_obj.usage_count or 0) + 1
+                music_obj.last_used_at = datetime.utcnow()
+
+                quote_obj.usage_count = (quote_obj.usage_count or 0) + 1
+                quote_obj.last_used_at = datetime.utcnow()
+
+                self.session.commit()
+
+                logger.info(f"[{i+1}/{count}] Two-part reel #{generated_reel.id} generated successfully")
+
+                # Send preview to Telegram
+                if self.telegram_bot:
+                    preview_data = {
+                        "video_name": video_obj.filename,
+                        "music_name": music_obj.filename,
+                        "hook": hook,
+                        "payoff": payoff,
+                        "caption": caption,
+                        "quality_score": generated_reel.quality_score,
+                        "is_two_part": True
+                    }
+                    await self.telegram_bot.send_reel_preview(
+                        generated_reel.id,
+                        preview_data
+                    )
+
+                results.append(
+                    {
+                        "id": generated_reel.id,
+                        "output_path": str(result["output_path"]),
+                        "caption": caption,
+                        "hook": hook,
+                        "payoff": payoff
+                    }
+                )
+
+            except Exception as e:
+                logger.error(f"Error generating two-part reel {i+1}: {e}")
+                if self.telegram_bot:
+                    await self.telegram_bot.send_notification(
+                        f"Error generating two-part reel: {e}",
+                        level="error"
+                    )
+
+        logger.info(f"Generated {len(results)} two-part reels successfully")
         return results
 
     async def schedule_reel(self, reel_id: int) -> None:

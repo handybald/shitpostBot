@@ -83,6 +83,7 @@ Welcome! I control autonomous Instagram content generation.
 Available commands:
 • `/status` - System status
 • `/generate [count]` - Generate N reels (default: 5)
+• `/generate_two_part [count]` - Generate high-engagement two-part reels ⭐
 • `/queue` - View pending reels
 • `/approve <reel_id>` - Approve reel for publishing
 • `/reject <reel_id>` - Reject and delete reel
@@ -233,6 +234,55 @@ Use buttons below commands for quick actions.
         except Exception as e:
             logger.error(f"Generate error: {e}")
             await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def generate_two_part(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /generate_two_part command - generate reels with hook+payoff quotes.
+        
+        Usage: /generate_two_part [count]
+        Generates reels with eye-catching hook (4s) + powerful payoff
+        Perfect for TikTok/Reels first-3-seconds engagement
+        """
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            count = int(context.args[0]) if context.args else 3
+            count = min(count, 10)  # Max 10 two-part videos at a time (slower to generate)
+
+            await update.message.reply_text(
+                f"🎬 Generating {count} two-part reels with hook+payoff...\n\n"
+                f"⏱️ Hook: Eye-catching yellow text (4 seconds)\n"
+                f"💥 Payoff: Powerful white text (remaining time)\n\n"
+                f"This may take several minutes.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+            if not self.orchestrator:
+                await update.message.reply_text("⚠️ Orchestrator not available")
+                return
+
+            # Generate two-part content
+            results = await self.orchestrator.generate_two_part_content(count=count)
+            
+            await update.message.reply_text(
+                f"✅ Generated {len(results)} two-part reels\n\n"
+                f"Reel IDs: {', '.join([str(r['id']) for r in results])}\n\n"
+                f"Use `/approve <reel_id>` to approve or `/queue` to view all pending.",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Usage: /generate_two_part [count]\n\n"
+                "Example: /generate_two_part 5\n\n"
+                "Generates high-engagement reels with:\n"
+                "• Provocative hook (yellow, 4 sec)\n"
+                "• Powerful payoff (white, remaining)"
+            )
+        except Exception as e:
+            logger.error(f"Generate two-part error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
     async def post_now(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /post_now command - immediately publish a reel by ID, bypassing schedule."""
         if not await self._check_admin(update, context):
@@ -882,6 +932,7 @@ Ready for approval?
         application.add_handler(CommandHandler("help", self.help_command))
         application.add_handler(CommandHandler("status", self.status))
         application.add_handler(CommandHandler("generate", self.generate))
+        application.add_handler(CommandHandler("generate_two_part", self.generate_two_part))
         application.add_handler(CommandHandler("queue", self.queue))
         application.add_handler(CommandHandler("schedule", self.schedule))
         application.add_handler(CommandHandler("approve", self.approve))
