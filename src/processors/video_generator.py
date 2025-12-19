@@ -110,16 +110,56 @@ class VideoGenerator:
             target_lufs=float(audio_config.get("target_lufs", -14)),
         )
 
-    def _build_video_filter(self) -> str:
-        """Build ffmpeg video filter chain for effects (simplified for minimal ffmpeg builds)."""
-        # Simplified version - scale and pad with proper color format
+    def _create_ass_subtitle(self, quote: str, ass_path: Path) -> None:
+        quote = " ".join(quote.strip().split())
+
+        lines = textwrap.wrap(
+            quote,
+            width=26,
+            break_long_words=False,
+            break_on_hyphens=False
+        )
+        wrapped = r"\N".join(lines)
+
+        fontsize = 82
+        if len(lines) > 4:
+            fontsize = 72
+        if len(lines) > 5:
+            fontsize = 62
+
+        ass_content = f"""[Script Info]
+    Title: Quote Overlay
+    ScriptType: v4.00+
+    PlayResX: 1080
+    PlayResY: 1920
+    WrapStyle: 2
+    ScaledBorderAndShadow: yes
+
+    [V4+ Styles]
+    Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+    Style: Default,Impact,{fontsize},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,1,5,90,90,0,1
+
+    [Events]
+    Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+    Dialogue: 0,0:00:00.00,0:00:10.00,Default,,0,0,0,,{{\\q2\\fad(600,600)\\t(0,300,\\fscx105\\fscy105)}}{wrapped}
+    """
+        ass_path.write_text(ass_content, encoding="utf-8")
+    def _ffmpeg_filter_escape(self, s: str) -> str:
+        # minimal set that commonly breaks filter args
+        return (s.replace("\\", "\\\\")
+                .replace(":", "\\:")
+                .replace(",", "\\,")
+                .replace("'", "\\'"))
+    def _build_video_filter_with_text(self, quote: str, ass_file_path: Path) -> str:
+        self._create_ass_subtitle(quote, ass_file_path)
+
+        ass = self._ffmpeg_filter_escape(ass_file_path.as_posix())
+
         return (
-            # Fit inside 1080x1920, center-pad with black bars
-            # Use format filter to ensure proper yuv420p before scaling
             "format=yuv420p,"
             "scale=1080:1920:force_original_aspect_ratio=decrease,"
             "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,"
-            "format=yuv420p"
+            f"subtitles=filename={ass}"
         )
 
     def _build_audio_filter(self) -> str:
@@ -132,32 +172,6 @@ class VideoGenerator:
             f"alimiter=limit={self.limiter}dB,"
             f"loudnorm=I={self.target_lufs}:TP=-1.0:LRA=7.0:dual_mono=true"
         )
-
-    def _make_ass_subtitle(self, quote: str, ass_path: Path) -> None:
-        """Create ASS subtitle file for quote overlay."""
-        # Uppercase, wrap to 28-34 chars per line, max 3 lines
-        core = quote.split("—")[0].strip().upper()
-        wrapped = textwrap.wrap(core, width=28)
-        wrapped = wrapped[:3]
-        text = r"\N".join(wrapped)  # ASS newline
-
-        # ASS template: big bold white, black outline, animated scale punch
-        ass_content = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
-WrapStyle: 2
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: BIG,{self.font_name},82,&H00FFFFFF,&H000000FF,&H00000000,&H66000000,1,0,0,0,100,100,0,0,1,4,2,2,60,60,210,1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-Dialogue: 0,0:00:00.30,9:59:59.00,BIG,,0000,0000,0000,,{{\\an2\\pos(540,1500)\\move(540,1500,540,1485,300,3000)\\fad(200,400)\\bord4\\shad2\\blur1\\1c&HFFFFFF&\\3c&H000000&\\fsp2\\t(300,1000,\\fscx110\\fscy110)\\t(1000,2000,\\fscx100\\fscy100)}}{text}
-"""
-        ass_path.write_text(ass_content, encoding="utf-8")
-        logger.debug(f"ASS subtitle created: {ass_path.name}")
 
     def generate(
         self,
@@ -201,31 +215,36 @@ Dialogue: 0,0:00:00.30,9:59:59.00,BIG,,0000,0000,0000,,{{\\an2\\pos(540,1500)\\m
         logger.info(f"Music: {music_path.name}")
         logger.info(f"Quote: {quote[:60]}...")
 
-        video_filter = self._build_video_filter()
-        audio_filter = self._build_audio_filter()
-
         try:
-            with tempfile.TemporaryDirectory() as td:
-                ass_path = Path(td) / "quote.ass"
-                self._make_ass_subtitle(quote, ass_path)
+            import tempfile
+            # Create temp file for ASS subtitle
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.ass', delete=False, encoding='utf-8') as tf:
+                text_file = Path(tf.name)
+            
+            # Build filters with text overlay
+            video_filter = self._build_video_filter_with_text(quote, text_file)
+            audio_filter = self._build_audio_filter()
 
-                # FFmpeg command - apply video effects and subtitle overlay
+            try:
+                # FFmpeg command - apply video effects with text and audio processing
                 logger.info("Combining video, music, and text overlay")
                 logger.info(f"Quote: {quote}")
 
-                # Build complete filter: video effects + subtitle overlay + audio processing
-                video_with_sub = f"[0:v]{video_filter},ass={ass_path.as_posix().replace(':', '\\\\:').replace('\\\\', '/')}[v]"
+                # Build filter chains properly - use semicolon to separate independent chains
+                video_filter_chain = f"[0:v]{video_filter}[v]"
+                audio_filter_chain = f"[1:a]{audio_filter}[a]"
                 
                 cmd = [
-                    "ffmpeg", "-y",
+                    "/usr/local/bin/ffmpeg", "-y",
                     "-i", video_path.as_posix(),
                     "-i", music_path.as_posix(),
                     "-filter_complex",
-                    f"{video_with_sub};[1:a]{audio_filter}[a]",
+                    f"{video_filter_chain};{audio_filter_chain}",
                     "-map", "[v]",  # Use filtered video with text overlay
                     "-map", "[a]",  # Use filtered audio
-                    "-c:v", "libx264", "-preset", "medium", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "192k",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k",
                     "-shortest",
                     output_path.as_posix()
                 ]
@@ -233,6 +252,11 @@ Dialogue: 0,0:00:00.30,9:59:59.00,BIG,,0000,0000,0000,,{{\\an2\\pos(540,1500)\\m
                 logger.info(f"Running ffmpeg...")
                 result = subprocess.run(cmd, capture_output=True, text=True, check=True)
                 logger.info(f"Video generated: {output_path.name}")
+
+            finally:
+                # Clean up temp text file
+                if text_file.exists():
+                    text_file.unlink()
 
         except subprocess.CalledProcessError as e:
             logger.error(f"FFmpeg error: {e.stderr}")
