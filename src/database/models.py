@@ -204,6 +204,23 @@ class ContentCalendar(Base):
         return f"<ContentCalendar {self.date} theme={self.theme}>"
 
 
+class ScheduleConfig(Base):
+    """Default posting schedule configuration"""
+    __tablename__ = "schedule_config"
+
+    id = Column(Integer, primary_key=True)
+    day_of_week = Column(Integer, nullable=False)  # 0-6 (Mon-Sun)
+    time = Column(String(5), nullable=False)  # HH:MM format
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        day_name = days[self.day_of_week] if 0 <= self.day_of_week <= 6 else "Unknown"
+        return f"<ScheduleConfig {day_name} at {self.time}>"
+
+
 class Job(Base):
     """Background job tracking"""
     __tablename__ = "jobs"
