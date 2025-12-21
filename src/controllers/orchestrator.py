@@ -11,7 +11,7 @@ Handles:
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
@@ -21,12 +21,13 @@ from apscheduler.triggers.cron import CronTrigger
 
 from src.utils.logger import get_logger
 from src.utils.config_loader import get_config_instance
+from src.utils import datetime_helpers
 from src.database import get_session
 from src.database.models import PublishedPost
 from src.database.repositories import (
     GeneratedReelRepository, ScheduledPostRepository,
     PublishedPostRepository,
-    ContentCalendarRepository, JobRepository
+    ContentCalendarRepository, JobRepository, ScheduleConfigRepository
 )
 from src.processors import ContentSelector, VideoGenerator, QualityChecker
 from src.services import InstagramService, LLMProvider
@@ -681,13 +682,11 @@ class BotOrchestrator:
                 logger.error(f"Reel #{reel_id} not found")
                 return
 
-            # Get next scheduled time from config
-            post_times = self.config.get("scheduling.post_times", [])
-            if not post_times:
+            # Get next scheduled time from database config
+            next_time = self._get_next_scheduled_time_from_db()
+            if not next_time:
                 logger.warning("No scheduled times configured")
                 return
-
-            next_time = self._get_next_scheduled_time(post_times[0])
 
             # Create scheduled post
             scheduled = sched_repo.create(
@@ -695,11 +694,14 @@ class BotOrchestrator:
                 scheduled_time=next_time
             )
 
-            logger.info(f"Reel #{reel_id} scheduled for {next_time}")
+            tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
+            formatted_time = datetime_helpers.format_datetime_for_display(next_time, tz_name)
+
+            logger.info(f"Reel #{reel_id} scheduled for {formatted_time}")
 
             if self.telegram_bot:
                 await self.telegram_bot.send_notification(
-                    f"✅ Reel #{reel_id} scheduled for {next_time.strftime('%Y-%m-%d %H:%M')}",
+                    f"✅ Reel #{reel_id} scheduled for {formatted_time}",
                     level="success"
                 )
 
@@ -839,3 +841,307 @@ class BotOrchestrator:
             scheduled += timedelta(days=7 - now.weekday() + day if day >= now.weekday() else day)
 
         return scheduled
+
+    def _get_next_scheduled_time_from_db(self) -> Optional[datetime]:
+        """
+        Get next scheduled time from database ScheduleConfig.
+        Falls back to config.yaml if DB is empty.
+
+        Returns:
+            UTC datetime for next scheduled post, or None if no schedule found
+        """
+        session = get_session()
+        try:
+            config_repo = ScheduleConfigRepository(session)
+
+            # Get all enabled schedule configs
+            schedules = config_repo.get_all()
+
+            if not schedules:
+                # Fall back to config.yaml
+                post_times = self.config.get("scheduling.post_times", [])
+                if post_times:
+                    return self._get_next_scheduled_time(post_times[0])
+                logger.warning("No schedules configured in DB or config.yaml")
+                return None
+
+            # Find the next scheduled time
+            now = datetime.utcnow()
+            tz = datetime_helpers.get_timezone()
+
+            # Convert UTC now to local timezone to get current weekday
+            now_local = now.replace(tzinfo=None)  # Use UTC for comparison
+            current_weekday = now.weekday()
+            current_time = now.time()
+
+            # Sort schedules by day and time
+            sorted_schedules = sorted(schedules, key=lambda s: (s.day_of_week, s.time))
+
+            # Find the next scheduled slot
+            for schedule in sorted_schedules:
+                schedule_hour, schedule_minute = map(int, schedule.time.split(":"))
+                schedule_time = (schedule_hour, schedule_minute)
+
+                # Check if this schedule is for today and still in the future
+                if schedule.day_of_week == current_weekday and (schedule_hour, schedule_minute) > (now.hour, now.minute):
+                    return now.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+
+                # Check if this schedule is for a future day this week
+                if schedule.day_of_week > current_weekday:
+                    days_ahead = schedule.day_of_week - current_weekday
+                    next_time = now + timedelta(days=days_ahead)
+                    return next_time.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+
+            # All schedules have passed this week, use first schedule for next week
+            first_schedule = sorted_schedules[0]
+            schedule_hour, schedule_minute = map(int, first_schedule.time.split(":"))
+            days_ahead = 7 - current_weekday + first_schedule.day_of_week
+            next_time = now + timedelta(days=days_ahead)
+            return next_time.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+
+        except Exception as e:
+            logger.error(f"Error getting next scheduled time from DB: {e}")
+            # Fall back to config.yaml
+            post_times = self.config.get("scheduling.post_times", [])
+            if post_times:
+                return self._get_next_scheduled_time(post_times[0])
+            return None
+        finally:
+            session.close()
+
+    async def reschedule_reel(self, reel_id: int, new_datetime: datetime) -> Tuple[bool, str]:
+        """
+        Reschedule a reel to a new date/time.
+
+        Args:
+            reel_id: ID of the reel to reschedule
+            new_datetime: New UTC datetime for scheduling
+
+        Returns:
+            Tuple of (success, message)
+        """
+        session = get_session()
+        try:
+            sched_repo = ScheduledPostRepository(session)
+            reel_repo = GeneratedReelRepository(session)
+
+            # Check if reel exists
+            reel = reel_repo.get_by_id(reel_id)
+            if not reel:
+                return False, f"Reel #{reel_id} not found"
+
+            # Check if reel is already scheduled
+            scheduled = sched_repo.get_by_reel_id(reel_id)
+            if not scheduled:
+                return False, f"Reel #{reel_id} is not scheduled"
+
+            # Update the scheduled time
+            sched_repo.update_scheduled_time(reel_id, new_datetime)
+
+            tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
+            formatted_time = datetime_helpers.format_datetime_for_display(new_datetime, tz_name)
+
+            logger.info(f"Reel #{reel_id} rescheduled to {formatted_time}")
+            return True, f"Reel #{reel_id} rescheduled to {formatted_time}"
+
+        except Exception as e:
+            logger.error(f"Error rescheduling reel: {e}")
+            return False, f"Error rescheduling reel: {e}"
+        finally:
+            session.close()
+
+    async def schedule_reel_at(self, reel_id: int, specific_datetime: datetime) -> Tuple[bool, str]:
+        """
+        Schedule an approved reel at a specific date/time.
+
+        Args:
+            reel_id: ID of the reel to schedule
+            specific_datetime: Specific UTC datetime for scheduling
+
+        Returns:
+            Tuple of (success, message)
+        """
+        session = get_session()
+        try:
+            reel_repo = GeneratedReelRepository(session)
+            sched_repo = ScheduledPostRepository(session)
+
+            # Check if reel exists
+            reel = reel_repo.get_by_id(reel_id)
+            if not reel:
+                return False, f"Reel #{reel_id} not found"
+
+            # Check if reel is already scheduled
+            existing = sched_repo.get_by_reel_id(reel_id)
+            if existing:
+                return False, f"Reel #{reel_id} is already scheduled for {existing.scheduled_time}"
+
+            # Mark reel as approved
+            reel_repo.update_status(reel_id, "approved")
+
+            # Create scheduled post
+            sched_repo.create(reel_id=reel_id, scheduled_time=specific_datetime)
+
+            tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
+            formatted_time = datetime_helpers.format_datetime_for_display(specific_datetime, tz_name)
+
+            logger.info(f"Reel #{reel_id} approved and scheduled for {formatted_time}")
+            return True, f"Reel #{reel_id} approved and scheduled for {formatted_time}"
+
+        except Exception as e:
+            logger.error(f"Error scheduling reel at specific time: {e}")
+            return False, f"Error scheduling reel: {e}"
+        finally:
+            session.close()
+
+    async def get_calendar_view(self, days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Get formatted calendar view of scheduled posts.
+
+        Args:
+            days: Number of days to include in calendar (default 30, max 90)
+
+        Returns:
+            List of calendar entries with date, time, reel info, quote, and quality
+        """
+        session = get_session()
+        try:
+            sched_repo = ScheduledPostRepository(session)
+
+            # Get calendar view from repository
+            entries = sched_repo.get_calendar_view(days=min(days, 90))
+
+            calendar = []
+            tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
+
+            for entry in entries:
+                reel = entry.get("reel")
+                scheduled_post = entry.get("scheduled_post")
+
+                if reel and scheduled_post:
+                    # Format the scheduled time
+                    formatted_time = datetime_helpers.format_datetime_for_display(
+                        scheduled_post.scheduled_time,
+                        tz_name
+                    )
+
+                    # Get quote text (if exists)
+                    quote_text = ""
+                    if reel.quote:
+                        quote_text = reel.quote.text[:100]  # First 100 chars
+                        if len(reel.quote.text) > 100:
+                            quote_text += "..."
+
+                    calendar.append({
+                        "reel_id": reel.id,
+                        "scheduled_time": formatted_time,
+                        "quote": quote_text,
+                        "quality": reel.quality_score,
+                        "duration": reel.duration,
+                        "status": scheduled_post.status
+                    })
+
+            return calendar
+
+        except Exception as e:
+            logger.error(f"Error getting calendar view: {e}")
+            return []
+        finally:
+            session.close()
+
+    async def update_schedule_config(self, day: int, time: str) -> Tuple[bool, str]:
+        """
+        Update or create default schedule configuration.
+
+        Args:
+            day: Day of week (0-6, 0=Monday)
+            time: Time in HH:MM format
+
+        Returns:
+            Tuple of (success, message)
+        """
+        session = get_session()
+        try:
+            config_repo = ScheduleConfigRepository(session)
+
+            # Validate day and time
+            is_valid, error = datetime_helpers.validate_day_of_week(day)
+            if not is_valid:
+                return False, error
+
+            # Validate time format
+            time_tuple, error = datetime_helpers.parse_time_string(time)
+            if error:
+                return False, error
+
+            # Find or create schedule entry
+            existing = config_repo.get_by_day(day)
+
+            if existing:
+                # Update existing
+                config_repo.update(existing[0].id, time=time, enabled=True)
+            else:
+                # Create new
+                config_repo.create(day_of_week=day, time=time)
+
+            day_name = datetime_helpers.day_name(day)
+            logger.info(f"Default schedule updated: {day_name} at {time}")
+            return True, f"Default schedule updated: {day_name} at {time}"
+
+        except Exception as e:
+            logger.error(f"Error updating schedule config: {e}")
+            return False, f"Error updating schedule: {e}"
+        finally:
+            session.close()
+
+    async def get_schedule_config(self) -> List[Dict[str, Any]]:
+        """
+        Get current default schedule configuration.
+
+        Returns:
+            List of schedule entries with day name, time, and source
+        """
+        session = get_session()
+        try:
+            config_repo = ScheduleConfigRepository(session)
+
+            # Get all enabled schedules
+            schedules = config_repo.get_all()
+
+            if not schedules:
+                # Fall back to config.yaml
+                config_schedules = self.config.get("scheduling.post_times", [])
+                result = []
+                for sched in config_schedules:
+                    day = sched.get("day", 0)
+                    time = sched.get("time", "18:00")
+                    result.append({
+                        "day": datetime_helpers.day_name(day),
+                        "time": time,
+                        "source": "config.yaml"
+                    })
+                return result
+
+            # Format database schedules
+            result = []
+            for schedule in schedules:
+                result.append({
+                    "day": datetime_helpers.day_name(schedule.day_of_week),
+                    "time": schedule.time,
+                    "source": "database"
+                })
+
+            # Add timezone info
+            tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
+            result.append({
+                "timezone": tz_name,
+                "type": "info"
+            })
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error getting schedule config: {e}")
+            return []
+        finally:
+            session.close()

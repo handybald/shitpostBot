@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_, or_
 from src.database.models import (
     Video, Music, Quote, GeneratedReel, ScheduledPost, PublishedPost,
-    PostMetrics, ContentCalendar, Job, AgentLog
+    PostMetrics, ContentCalendar, Job, AgentLog, ScheduleConfig
 )
 
 
@@ -204,6 +204,31 @@ class ScheduledPostRepository:
             self.session.commit()
         return post
 
+    def get_by_reel_id(self, reel_id: int):
+        """Get scheduled post by reel_id"""
+        return self.session.query(ScheduledPost).filter(
+            ScheduledPost.reel_id == reel_id
+        ).first()
+
+    def update_scheduled_time(self, reel_id: int, new_time: datetime):
+        """Update scheduled time for a reel"""
+        post = self.get_by_reel_id(reel_id)
+        if post:
+            post.scheduled_time = new_time
+            self.session.commit()
+        return post
+
+    def get_calendar_view(self, days: int = 30):
+        """Get all scheduled posts for calendar view, ordered by time"""
+        now = datetime.utcnow()
+        future = now + timedelta(days=days)
+        return self.session.query(ScheduledPost).filter(
+            and_(
+                ScheduledPost.scheduled_time >= now,
+                ScheduledPost.scheduled_time <= future
+            )
+        ).order_by(ScheduledPost.scheduled_time).all()
+
 
 class PublishedPostRepository:
     def __init__(self, session: Session):
@@ -350,3 +375,65 @@ class JobRepository:
                 job.result = result
             self.session.commit()
         return job
+
+
+class ScheduleConfigRepository:
+    """Repository for managing default posting schedule configuration"""
+
+    def __init__(self, session: Session):
+        self.session = session
+
+    def create(self, day_of_week: int, time: str) -> ScheduleConfig:
+        """Create new schedule config entry"""
+        config = ScheduleConfig(day_of_week=day_of_week, time=time)
+        self.session.add(config)
+        self.session.commit()
+        return config
+
+    def get_all(self):
+        """Get all enabled schedule configurations ordered by day/time"""
+        return self.session.query(ScheduleConfig).filter(
+            ScheduleConfig.enabled == True
+        ).order_by(ScheduleConfig.day_of_week, ScheduleConfig.time).all()
+
+    def get_by_day(self, day_of_week: int):
+        """Get schedules for specific day"""
+        return self.session.query(ScheduleConfig).filter(
+            ScheduleConfig.day_of_week == day_of_week,
+            ScheduleConfig.enabled == True
+        ).order_by(ScheduleConfig.time).all()
+
+    def update(self, config_id: int, time: str = None, enabled: bool = None):
+        """Update schedule config"""
+        config = self.session.query(ScheduleConfig).get(config_id)
+        if config:
+            if time is not None:
+                config.time = time
+            if enabled is not None:
+                config.enabled = enabled
+            config.updated_at = datetime.utcnow()
+            self.session.commit()
+        return config
+
+    def delete(self, config_id: int):
+        """Delete schedule config"""
+        config = self.session.query(ScheduleConfig).get(config_id)
+        if config:
+            self.session.delete(config)
+            self.session.commit()
+        return config
+
+    def find_or_create_slot(self, day_of_week: int, time: str):
+        """Find existing or create new schedule slot"""
+        existing = self.session.query(ScheduleConfig).filter(
+            ScheduleConfig.day_of_week == day_of_week,
+            ScheduleConfig.time == time
+        ).first()
+
+        if existing:
+            if not existing.enabled:
+                existing.enabled = True
+                self.session.commit()
+            return existing
+
+        return self.create(day_of_week, time)

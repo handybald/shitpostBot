@@ -19,6 +19,7 @@ from telegram.constants import ParseMode
 
 from src.utils.logger import get_logger
 from src.utils.config_loader import get_config_instance
+from src.utils import datetime_helpers
 from src.database import get_session
 from src.database.repositories import (
     GeneratedReelRepository, ScheduledPostRepository,
@@ -82,14 +83,15 @@ Welcome! I control autonomous Instagram content generation.
 
 Available commands:
 • `/status` - System status
-• `/generate [count]` - Generate N reels (default: 5)
-• `/generate_two_part [count]` - Generate high-engagement two-part reels ⭐
+• `/generate [count]` - Generate two-part reels (default: 3)
 • `/queue` - View pending reels
 • `/approve <reel_id>` - Approve reel for publishing
 • `/reject <reel_id>` - Reject and delete reel
+• `/reschedule <id> <date> <time>` - Reschedule post
+• `/calendar [days]` - View scheduled posts calendar
 • `/schedule` - View scheduled posts (next 7 days)
 • `/analytics [days]` - Performance report (default: 7)
-• `/help` - Show this message
+• `/help` - Show detailed command list
         """
         try:
             await update.message.reply_text(welcome, parse_mode=ParseMode.MARKDOWN)
@@ -106,8 +108,8 @@ Available commands:
 *ShitPostBot Commands*
 
 *Generation*
-• `/generate` - Generate 5 reels
-• `/generate 10` - Generate 10 reels
+• `/generate` - Generate 3 two-part reels (hook + payoff)
+• `/generate 10` - Generate 10 two-part reels
 • `/queue` - View pending reels awaiting approval
 
 *Approval Workflow*
@@ -118,6 +120,11 @@ Available commands:
 *Scheduling*
 • `/schedule` - View next 7 days
 • `/post_now <id>` - Publish immediately (skip schedule)
+• `/reschedule <id> <date> <time>` - Reschedule reel
+• `/calendar [days]` - View scheduled posts calendar
+• `/approve_at <id> <date> <time>` - Approve with custom time
+• `/set_schedule <day> <time>` - Set default schedule
+• `/get_schedule` - View current schedule
 
 *Analytics*
 • `/analytics` - Last 7 days
@@ -204,41 +211,9 @@ Use buttons below commands for quick actions.
             session.close()
 
     async def generate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /generate command."""
-        if not await self._check_admin(update, context):
-            return
+        """Handle /generate command - generate reels with hook+payoff quotes.
 
-        try:
-            count = int(context.args[0]) if context.args else 5
-            count = min(count, 20)  # Max 20 per command
-
-            await update.message.reply_text(
-                f"🎬 Generating {count} reels...\n\nThis may take a few minutes.",
-                parse_mode=ParseMode.MARKDOWN
-            )
-
-            if self.orchestrator:
-                results = await self.orchestrator.generate_content(count=count)
-                await update.message.reply_text(
-                    f"✅ Generated {len(results)} reels",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-            else:
-                await update.message.reply_text(
-                    "⚠️ Orchestrator not available",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-
-        except ValueError:
-            await update.message.reply_text("❌ Usage: /generate [count]")
-        except Exception as e:
-            logger.error(f"Generate error: {e}")
-            await update.message.reply_text(f"❌ Error: {str(e)}")
-
-    async def generate_two_part(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /generate_two_part command - generate reels with hook+payoff quotes.
-        
-        Usage: /generate_two_part [count]
+        Usage: /generate [count]
         Generates reels with eye-catching hook (4s) + powerful payoff
         Perfect for TikTok/Reels first-3-seconds engagement
         """
@@ -273,14 +248,15 @@ Use buttons below commands for quick actions.
 
         except ValueError:
             await update.message.reply_text(
-                "❌ Usage: /generate_two_part [count]\n\n"
-                "Example: /generate_two_part 5\n\n"
+                "❌ Usage: /generate [count]\n\n"
+                "Example: /generate 5\n\n"
                 "Generates high-engagement reels with:\n"
-                "• Provocative hook (yellow, 4 sec)\n"
-                "• Powerful payoff (white, remaining)"
+                "• Eye-catching hook (random color, 4 sec)\n"
+                "• Powerful payoff (magenta→cyan, 9 sec)\n"
+                "• 13 second total duration"
             )
         except Exception as e:
-            logger.error(f"Generate two-part error: {e}")
+            logger.error(f"Generate error: {e}")
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
     async def post_now(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -812,12 +788,19 @@ Data updates as you get engagement on Instagram
         try:
             app = Application.builder().token(self.bot_token).build()
 
+            # Handle both single-part (quote) and two-part (hook+payoff) reels
+            is_two_part = reel_data.get('is_two_part', False)
+            if is_two_part:
+                quote_text = f"🎣 Hook: {reel_data.get('hook', 'N/A')[:40]}\n💥 Payoff: {reel_data.get('payoff', 'N/A')[:40]}"
+            else:
+                quote_text = f"💬 Quote: {reel_data.get('quote', 'N/A')[:60]}"
+
             preview_msg = f"""
 🎬 *New Reel Generated*
 
 📹 Video: `{reel_data.get('video_name', 'N/A')}`
 🎵 Music: `{reel_data.get('music_name', 'N/A')}`
-💬 Quote: {reel_data.get('quote', 'N/A')[:60]}
+{quote_text}
 ✍️ Caption: {reel_data.get('caption', 'N/A')[:80]}
 ⭐ Quality: {reel_data.get('quality_score', 0):.2f}
 
@@ -917,6 +900,260 @@ Ready for approval?
         """Format datetime for display."""
         return dt.strftime("%Y-%m-%d %H:%M:%S")
 
+    # ==================== New Scheduling Commands ====================
+
+    async def reschedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /reschedule command - reschedule a reel to new date/time.
+
+        Usage: /reschedule <reel_id> <date> <time>
+        Example: /reschedule 123 2025-12-25 18:00
+        """
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            if not context.args or len(context.args) < 3:
+                await update.message.reply_text(
+                    "❌ Usage: /reschedule <reel_id> <date> <time>\n"
+                    "Example: /reschedule 123 2025-12-25 18:00"
+                )
+                return
+
+            reel_id = int(context.args[0])
+            date_str = context.args[1]  # YYYY-MM-DD
+            time_str = context.args[2]  # HH:MM
+
+            # Parse the datetime
+            tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
+            dt_utc, error = datetime_helpers.parse_datetime_string(date_str, time_str, tz_name)
+
+            if error:
+                await update.message.reply_text(f"❌ {error}")
+                return
+
+            # Call orchestrator
+            if not self.orchestrator:
+                await update.message.reply_text("❌ Orchestrator not available")
+                return
+
+            success, message = await self.orchestrator.reschedule_reel(reel_id, dt_utc)
+
+            if success:
+                await update.message.reply_text(f"✅ {message}")
+            else:
+                await update.message.reply_text(f"❌ {message}")
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid reel_id. Must be a number.")
+        except Exception as e:
+            logger.error(f"Reschedule error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def calendar(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /calendar command - view scheduled posts calendar.
+
+        Usage: /calendar [days]
+        Example: /calendar 30 (default 30, max 90)
+        """
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            days = int(context.args[0]) if context.args else 30
+            days = min(days, 90)  # Max 90 days
+
+            if not self.orchestrator:
+                await update.message.reply_text("❌ Orchestrator not available")
+                return
+
+            calendar = await self.orchestrator.get_calendar_view(days=days)
+
+            if not calendar:
+                await update.message.reply_text(f"📅 No posts scheduled for the next {days} days")
+                return
+
+            # Group by date
+            by_date = {}
+            for entry in calendar:
+                date_str = entry["scheduled_time"].split(" ")[0]  # Extract date part
+                if date_str not in by_date:
+                    by_date[date_str] = []
+                by_date[date_str].append(entry)
+
+            # Format message
+            msg = f"📅 *Calendar (Next {days} Days)*\n\n"
+
+            for date in sorted(by_date.keys()):
+                msg += f"*📆 {date}*\n"
+                for entry in by_date[date]:
+                    time_part = entry["scheduled_time"].split(" ")[1]  # Extract time
+                    quality = entry["quality"]
+                    quote_preview = entry["quote"][:50] if entry["quote"] else "(no quote)"
+                    msg += (
+                        f"  • Reel #{entry['reel_id']}: {time_part}\n"
+                        f"    💬 {quote_preview}\n"
+                        f"    ⭐ Quality: {quality:.2f}\n"
+                    )
+
+                msg += "\n"
+
+            # Handle message length limit (4096 chars)
+            if len(msg) > 4000:
+                # Send in chunks
+                parts = msg.split("\n\n")
+                current_msg = ""
+                for part in parts:
+                    if len(current_msg) + len(part) + 2 > 4000:
+                        if current_msg:
+                            await update.message.reply_text(current_msg, parse_mode=ParseMode.MARKDOWN)
+                        current_msg = part + "\n\n"
+                    else:
+                        current_msg += part + "\n\n"
+
+                if current_msg:
+                    await update.message.reply_text(current_msg, parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid days count. Must be a number (1-90)")
+        except Exception as e:
+            logger.error(f"Calendar error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def approve_at(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /approve_at command - approve reel with custom scheduling time.
+
+        Usage: /approve_at <reel_id> <date> <time>
+        Example: /approve_at 456 2025-12-26 14:00
+        """
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            if not context.args or len(context.args) < 3:
+                await update.message.reply_text(
+                    "❌ Usage: /approve_at <reel_id> <date> <time>\n"
+                    "Example: /approve_at 456 2025-12-26 14:00"
+                )
+                return
+
+            reel_id = int(context.args[0])
+            date_str = context.args[1]  # YYYY-MM-DD
+            time_str = context.args[2]  # HH:MM
+
+            # Parse the datetime
+            tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
+            dt_utc, error = datetime_helpers.parse_datetime_string(date_str, time_str, tz_name)
+
+            if error:
+                await update.message.reply_text(f"❌ {error}")
+                return
+
+            # Call orchestrator
+            if not self.orchestrator:
+                await update.message.reply_text("❌ Orchestrator not available")
+                return
+
+            success, message = await self.orchestrator.schedule_reel_at(reel_id, dt_utc)
+
+            if success:
+                await update.message.reply_text(f"✅ {message}")
+            else:
+                await update.message.reply_text(f"❌ {message}")
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid reel_id. Must be a number.")
+        except Exception as e:
+            logger.error(f"Approve_at error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def set_schedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /set_schedule command - set default posting schedule.
+
+        Usage: /set_schedule <day> <time>
+        Days: 0=Monday, 1=Tuesday, ..., 6=Sunday
+        Example: /set_schedule 1 18:00 (Tuesday at 18:00)
+        """
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            if not context.args or len(context.args) < 2:
+                await update.message.reply_text(
+                    "❌ Usage: /set_schedule <day> <time>\n"
+                    "Days: 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun\n"
+                    "Example: /set_schedule 1 18:00"
+                )
+                return
+
+            day = int(context.args[0])
+            time_str = context.args[1]
+
+            # Validate
+            is_valid, error = datetime_helpers.validate_day_of_week(day)
+            if not is_valid:
+                await update.message.reply_text(f"❌ {error}")
+                return
+
+            time_tuple, error = datetime_helpers.parse_time_string(time_str)
+            if error:
+                await update.message.reply_text(f"❌ {error}")
+                return
+
+            # Call orchestrator
+            if not self.orchestrator:
+                await update.message.reply_text("❌ Orchestrator not available")
+                return
+
+            success, message = await self.orchestrator.update_schedule_config(day, time_str)
+
+            if success:
+                await update.message.reply_text(f"✅ {message}")
+            else:
+                await update.message.reply_text(f"❌ {message}")
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid day or time format.")
+        except Exception as e:
+            logger.error(f"Set_schedule error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def get_schedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /get_schedule command - view current default posting schedule."""
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            if not self.orchestrator:
+                await update.message.reply_text("❌ Orchestrator not available")
+                return
+
+            schedules = await self.orchestrator.get_schedule_config()
+
+            if not schedules:
+                await update.message.reply_text("⚙️ No schedule configured")
+                return
+
+            msg = "⚙️ *Default Posting Schedule*\n\n"
+
+            # Extract timezone info
+            tz_name = "Europe/Istanbul"
+            for sched in schedules:
+                if sched.get("type") == "info":
+                    tz_name = sched.get("timezone", "Europe/Istanbul")
+                    continue
+
+                msg += f"• {sched.get('day')}: {sched.get('time')}\n"
+
+            msg += f"\n📍 Timezone: {tz_name}"
+
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+        except Exception as e:
+            logger.error(f"Get_schedule error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
     async def start_polling(self) -> None:
         """Start Telegram bot polling."""
         if not self.bot_token:
@@ -932,7 +1169,6 @@ Ready for approval?
         application.add_handler(CommandHandler("help", self.help_command))
         application.add_handler(CommandHandler("status", self.status))
         application.add_handler(CommandHandler("generate", self.generate))
-        application.add_handler(CommandHandler("generate_two_part", self.generate_two_part))
         application.add_handler(CommandHandler("queue", self.queue))
         application.add_handler(CommandHandler("schedule", self.schedule))
         application.add_handler(CommandHandler("approve", self.approve))
@@ -944,6 +1180,13 @@ Ready for approval?
         application.add_handler(CommandHandler("schedulepreview", self.schedulepreview))
         application.add_handler(CommandHandler("preview", self.preview))
         application.add_handler(CommandHandler("post_now", self.post_now))
+
+        # Add new scheduling command handlers
+        application.add_handler(CommandHandler("reschedule", self.reschedule))
+        application.add_handler(CommandHandler("calendar", self.calendar))
+        application.add_handler(CommandHandler("approve_at", self.approve_at))
+        application.add_handler(CommandHandler("set_schedule", self.set_schedule))
+        application.add_handler(CommandHandler("get_schedule", self.get_schedule))
 
         # Add button callbacks
         application.add_handler(CallbackQueryHandler(self.button_approve, pattern="^approve_"))

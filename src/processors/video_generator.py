@@ -10,6 +10,7 @@ Handles:
 """
 
 import json
+import random
 import subprocess
 import tempfile
 import textwrap
@@ -110,6 +111,24 @@ class VideoGenerator:
             target_lufs=float(audio_config.get("target_lufs", -14)),
         )
 
+    @staticmethod
+    def _generate_random_white_color() -> str:
+        """Generate random white-ish color in ASS BGR format (&HBBGGRR).
+
+        Returns colors in range:
+        - R: 200-255 (bright red component)
+        - G: 200-255 (bright green component)
+        - B: 200-255 (bright blue component)
+
+        This creates various pale/light colors near white.
+        Format: &H00BBGGRR (in BGR order with transparency 00)
+        """
+        r = random.randint(200, 255)
+        g = random.randint(200, 255)
+        b = random.randint(200, 255)
+        # ASS uses BGR format, so convert RGB to BGR
+        return f"&H00{b:02X}{g:02X}{r:02X}"
+
     def _create_ass_subtitle(self, quote: str, ass_path: Path) -> None:
         quote = " ".join(quote.strip().split())
 
@@ -146,10 +165,10 @@ class VideoGenerator:
         ass_path.write_text(ass_content, encoding="utf-8")
 
     def _create_two_part_ass_subtitle(self, hook: str, payoff: str, ass_path: Path) -> None:
-        """Create ASS subtitle for two-part quote: hook (0-4.5s) + payoff (4.5-10s).
+        """Create ASS subtitle for two-part quote: hook (0-4.5s) + payoff (4.5-13s).
 
-        Hook: Starts at 0.2s, ends at 4.5s with eye-catching yellow style
-        Payoff: Starts at 4.5s, ends at 10s with dynamic animated style
+        Hook: Starts at 0.2s, ends at 4.5s with eye-catching color (randomized white-ish)
+        Payoff: Starts at 4.5s, ends at 13s with dynamic animated style
         - Color shift: Magenta → Cyan transition (smooth, readable)
         - Scale pulse: Grows to 112% then returns to 100%
         - Heavy glow/shadow (3px border, 4px shadow) for visibility on any background
@@ -157,7 +176,7 @@ class VideoGenerator:
           * 0-700ms: Fade in + grow to 112% + magenta color
           * 700-3500ms: Smooth color transition from magenta to cyan
           * 3500-5500ms: Shrink back to normal size (creates rhythm)
-        Timing is designed for a 10-second reel with proper transitions.
+        Timing is designed for a 13-second reel with proper transitions.
         """
         hook = " ".join(hook.strip().split())
         payoff = " ".join(payoff.strip().split())
@@ -171,6 +190,10 @@ class VideoGenerator:
         hook_fontsize = 80 if len(hook_lines) <= 3 else 70
         payoff_fontsize = 72 if len(payoff_lines) <= 4 else 62
 
+        # Generate random white-ish colors for hook and payoff (changes each reel)
+        hook_color = self._generate_random_white_color()
+        payoff_color = self._generate_random_white_color()
+
         ass_content = f"""[Script Info]
         Title: Two-Part Quote
         ScriptType: v4.00+
@@ -181,13 +204,13 @@ class VideoGenerator:
 
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-        Style: Hook,Impact,{hook_fontsize},&H00FFFF00,&H000000FF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,4,2,2,60,60,200,1
-        Style: Payoff,Impact,{payoff_fontsize},&H00FF00FF,&H000000FF,&H00FF6600,&H64000000,-1,0,0,0,100,100,0,0,1,4,3,2,60,60,300,1
+        Style: Hook,Impact,{hook_fontsize},{hook_color},&H000000FF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,4,2,2,60,60,200,1
+        Style: Payoff,Impact,{payoff_fontsize},{payoff_color},&H000000FF,&H00FF6600,&H64000000,-1,0,0,0,100,100,0,0,1,4,3,2,60,60,300,1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         Dialogue: 0,0:00:0.20,0:00:4.50,Hook,,0,0,0,,{{\\q2\\fad(400,200)\\t(200,1800,\\fscx115\\fscy115)\\t(3500,4500,\\fscx100\\fscy100)}}{hook_wrapped}
-        Dialogue: 1,0:00:4.50,0:00:10.00,Payoff,,0,0,0,,{{\\q2\\bord3\\shad4\\fad(300,500)\\t(0,700,\\fscx112\\fscy112\\c&H00FF00FF&)\\t(700,3500,\\c&H0000FFFF&)\\t(3500,5500,\\fscx100\\fscy100)}}{payoff_wrapped}
+        Dialogue: 1,0:00:4.50,0:00:13.00,Payoff,,0,0,0,,{{\\q2\\bord3\\shad4\\fad(300,500)\\t(0,700,\\fscx112\\fscy112\\c&H00FF00FF&)\\t(700,3500,\\c&H0000FFFF&)\\t(3500,5500,\\fscx100\\fscy100)}}{payoff_wrapped}
         """
         ass_path.write_text(ass_content, encoding="utf-8")
     def _ffmpeg_filter_escape(self, s: str) -> str:
@@ -464,14 +487,14 @@ class VideoGenerator:
                 "-i", video_path.as_posix(),
                 "-i", music_path.as_posix(),
                 "-filter_complex", f"[0:v]{video_filter_str}[v_out];[1:a]{audio_filter}[a_out]",
-                "-map", "[v_out]", 
+                "-map", "[v_out]",
                 "-map", "[a_out]",
-                "-c:v", "libx264", 
+                "-c:v", "libx264",
                 "-preset", "medium",       # 'medium' is safer than 'ultrafast' for preventing strips
-                "-crf", "20",              # High quality (lower = better)
-                # "-pix_fmt", "rgb24",
+                "-crf", "18",              # Very high quality (lower = better, 18 is near-lossless)
+                # "-pix_fmt", "yuv420p",     # Standard format for maximum compatibility
                 "-shortest",
-                "-t", "10",
+                "-t", "13",
                 output_path.as_posix()
             ]
 
