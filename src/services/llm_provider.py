@@ -166,7 +166,17 @@ class GeminiGenerator(CaptionGenerator):
         music_energy: Optional[str] = None,
     ) -> str:
         """Build prompt for caption generation."""
+        import random
+
         energy_desc = f" with {music_energy} energy phonk music" if music_energy else ""
+
+        # Random caption style rotation
+        caption_styles = [
+            "Use a QUESTION style: 'Does this happen to you?', 'Who can relate?', 'Are you ready?'",
+            "Use a CALL-TO-ACTION style: 'Send this to someone who needs it', 'Tag a friend', 'Share if you agree'",
+            "Use a STATEMENT style with hashtags: Motivational message + #sigmamindset #redpillreality #motivation"
+        ]
+        selected_style = random.choice(caption_styles)
 
         return f"""Generate an engaging Instagram reel caption for a {theme} themed reel{energy_desc}.
 
@@ -175,9 +185,10 @@ The reel features this quote: "{quote}"
 Requirements:
 - Under 150 characters total
 - Authentic, bold, and direct tone
-- Include 2-3 relevant hashtags (redpill/sigma/motivation style)
+- Include MAXIMUM 3 relevant hashtags (redpill/sigma/motivation style)
 - No fluff or corporate speak
 - Match the {theme} vibe (redpill, sigma mindset, brutal truth)
+- {selected_style}
 
 Generate ONLY the caption, no explanations or quotation marks."""
 
@@ -262,46 +273,81 @@ class TemplateGenerator(CaptionGenerator):
             "{quote} 💪 #Motivation #Mindset #Success",
             "Real talk: {quote} 🔥 #RedPill #Truth #Growth",
             "{quote} ⚡ #SigmaMindset #Hustle #Win",
+            "Does this resonate with you? {quote} #Motivation #Reality",
+            "Tag someone who needs to hear this: {quote} 💎",
+            "Who's ready? {quote} #Success #NeverGiveUp",
         ],
         "redpill_reality": [
             "{quote} 💊 #RedPill #Truth #RealityCheck",
             "Facts: {quote} 🎯 #HardTruth #NoBS #Mindset",
             "{quote} ⚡ #RedPilled #Woke #Success",
+            "They don't want you to know: {quote} 🚨",
+            "Tag someone who sees the truth #RedPill",
+            "This is what they don't teach: {quote} 💊 #Reality",
         ],
         "sigma_mindset": [
             "{quote} 🐺 #SigmaMale #HighValue #Grindset",
             "{quote} ⚡ #SigmaMindset #LonePath #Success",
             "{quote} 💎 #Sigma #IndependentMindset #Boss",
+            "Who's built different? Share this 🐺 #SigmaGrind",
+            "Only sigma males understand: {quote} 💯",
+            "Real ones know: {quote} #SigmaMindset #NoCompromise",
         ],
         "philosophy": [
             "{quote} 🧠 #Philosophy #Wisdom #Truth",
             "{quote} 💭 #Stoic #DeepThoughts #Mindset",
             "{quote} 📖 #Philosophy #AncientWisdom #Growth",
+            "Ancient wisdom: {quote} 🏛️ #Philosophy",
+            "Can you relate to this? {quote} #WisdomShare",
         ],
         "stoic_philosophy": [
             "{quote} 🏛️ #Stoicism #MarcusAurelius #Wisdom",
             "{quote} ⚔️ #StoicMindset #InnerPeace #Strength",
             "{quote} 🗿 #Stoic #Philosophy #Resilience",
+            "Share this with someone struggling #Stoicism",
+            "Marcus Aurelius knew: {quote} 💪 #StoicLife",
+        ],
+        "brutal_truth": [
+            "{quote} 🔥 #HardTruth #BrutalReality #FaceIt",
+            "Someone needs to hear: {quote} 💯 #Truth",
+            "Most won't accept: {quote} 🚨 #RealTalk",
+            "Tag a friend who needs this wake-up call #BrutalTruth",
+            "The uncomfortable truth: {quote} 🎯 #Reality",
         ],
         "hustle": [
             "{quote} 🔥 #Hustle #Grind #NoExcuses",
             "{quote} 💼 #Entrepreneur #HustleHard #Success",
             "{quote} 💪 #GrindMode #Results #Dedication",
+            "This is for hustlers only: {quote} 💯",
+            "Share to someone on the grind #NeverStop",
         ],
         "monk_mode": [
             "{quote} 🧘 #MonkMode #Focus #SelfDiscipline",
             "{quote} 🎯 #DeepWork #NoDistractions #Growth",
             "{quote} 🔇 #MonkMode #Isolation #Building",
+            "Are you ready to go monk mode? {quote} 🧘",
+            "Spread this to those serious about growth #Focus",
         ],
         "financial_freedom": [
             "{quote} 💰 #FinancialFreedom #Wealth #Money",
             "{quote} 📈 #Investing #WealthBuilding #Freedom",
             "{quote} 💵 #Finance #Entrepreneur #Rich",
+            "Who wants financial freedom? {quote} 🚀 #Wealth",
+            "Share with someone building empire #Money #Success",
         ],
         "self_improvement": [
             "{quote} 📈 #SelfImprovement #Growth #BetterEveryDay",
             "{quote} 🎯 #PersonalDevelopment #LevelUp #Success",
             "{quote} 💎 #SelfGrowth #Transformation #Mindset",
+            "Tag someone on their growth journey {quote} 📈",
+            "You needed to read this: {quote} #GrowthMindset",
+        ],
+        "sigma_gaming": [
+            "Strategic thinking wins: {quote} ♟️ #SigmaGaming #Strategy",
+            "Every move matters. {quote} 🎮 #CompetitiveEdge #Gaming",
+            "Only sigma gamers know: {quote} 💯 #StrategyWins",
+            "Who's built to compete? {quote} 🐺 #GamingMindset",
+            "The game rewards strategy: {quote} ♟️ #SigmaMindset #Gaming",
         ],
     }
 
@@ -339,6 +385,42 @@ class LLMProvider:
         self.generator = generator
         self.fallback = fallback or TemplateGenerator()
         logger.info("LLM provider initialized")
+
+    def _sanitize_caption(self, caption: str) -> str:
+        """
+        Ensure caption has 2-3 hashtags and is under 150 chars.
+
+        Args:
+            caption: Raw caption from generator
+
+        Returns:
+            Cleaned caption with 2-3 hashtags
+        """
+        import re
+
+        # Find all hashtags
+        hashtags = re.findall(r'#\w+', caption)
+
+        # Track if we had hashtags originally
+        had_hashtags = len(hashtags) > 0
+
+        # If more than 3 hashtags, keep only the first 3
+        if len(hashtags) > 3:
+            # Remove extra hashtags from the caption
+            caption_text = caption
+            for ht in hashtags[3:]:
+                caption_text = caption_text.replace(ht, "").strip()
+            caption = caption_text
+
+        # If NO hashtags, add default ones
+        if not had_hashtags:
+            caption = caption + " #Motivation #Mindset #Success"
+
+        # Ensure caption is under 150 chars
+        if len(caption) > 150:
+            caption = caption[:150].rsplit(' ', 1)[0].rstrip('#').strip() + '...'
+
+        return caption.strip()
 
     @classmethod
     def from_config(cls):
@@ -433,16 +515,17 @@ class LLMProvider:
                 theme=theme,
                 music_energy=music_energy
             )
-            return caption
+            return self._sanitize_caption(caption)
         except Exception as e:
             logger.warning(f"Primary generator failed, using fallback: {e}")
             try:
-                return self.fallback.generate(
+                caption = self.fallback.generate(
                     quote=quote,
                     theme=theme,
                     music_energy=music_energy
                 )
+                return self._sanitize_caption(caption)
             except Exception as e2:
                 logger.error(f"Fallback generator also failed: {e2}")
-                # Last resort: quote + minimal caption
+                # Last resort: quote + minimal caption (already sanitized - 2 hashtags)
                 return f'"{quote}"\n\n#ReelQuote #Motivation'

@@ -260,14 +260,19 @@ class BotOrchestrator:
             reel_repo = GeneratedReelRepository(self.session)
             sched_repo = ScheduledPostRepository(self.session)
 
-            # Get scheduled posts that are ready
-            now = datetime.utcnow()
+            # Get scheduled posts that are ready (using UTC for DB comparison)
+            now_utc = datetime.utcnow()
+            logger.debug(f"Checking for scheduled posts. Current UTC time: {now_utc}")
+
             scheduled = sched_repo.session.query(ScheduledPostRepository.model).filter(
-                ScheduledPostRepository.model.scheduled_time <= now,
+                ScheduledPostRepository.model.scheduled_time <= now_utc,
                 ScheduledPostRepository.model.status == "scheduled"
             ).all()
 
+            logger.debug(f"Found {len(scheduled)} scheduled posts ready to publish")
+
             for post in scheduled:
+                logger.info(f"Publishing scheduled reel #{post.reel_id} (scheduled for {post.scheduled_time})")
                 await self.publish_reel_to_instagram(post.reel_id)
 
         except Exception as e:
@@ -866,13 +871,18 @@ class BotOrchestrator:
                 return None
 
             # Find the next scheduled time
-            now = datetime.utcnow()
+            now_utc = datetime.utcnow()
             tz = datetime_helpers.get_timezone()
 
-            # Convert UTC now to local timezone to get current weekday
-            now_local = now.replace(tzinfo=None)  # Use UTC for comparison
-            current_weekday = now.weekday()
-            current_time = now.time()
+            # Convert UTC to local timezone to properly compare with scheduled times
+            from pytz import utc
+            import pytz
+            now_utc_aware = utc.localize(now_utc)
+            now_local = now_utc_aware.astimezone(tz)
+
+            current_weekday = now_local.weekday()
+            current_hour = now_local.hour
+            current_minute = now_local.minute
 
             # Sort schedules by day and time
             sorted_schedules = sorted(schedules, key=lambda s: (s.day_of_week, s.time))
@@ -880,24 +890,27 @@ class BotOrchestrator:
             # Find the next scheduled slot
             for schedule in sorted_schedules:
                 schedule_hour, schedule_minute = map(int, schedule.time.split(":"))
-                schedule_time = (schedule_hour, schedule_minute)
 
                 # Check if this schedule is for today and still in the future
-                if schedule.day_of_week == current_weekday and (schedule_hour, schedule_minute) > (now.hour, now.minute):
-                    return now.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+                if schedule.day_of_week == current_weekday and (schedule_hour, schedule_minute) > (current_hour, current_minute):
+                    # Create a local time and convert back to UTC
+                    next_local = now_local.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+                    return next_local.astimezone(utc).replace(tzinfo=None)
 
                 # Check if this schedule is for a future day this week
                 if schedule.day_of_week > current_weekday:
                     days_ahead = schedule.day_of_week - current_weekday
-                    next_time = now + timedelta(days=days_ahead)
-                    return next_time.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+                    next_local = now_local + timedelta(days=days_ahead)
+                    next_local = next_local.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+                    return next_local.astimezone(utc).replace(tzinfo=None)
 
             # All schedules have passed this week, use first schedule for next week
             first_schedule = sorted_schedules[0]
             schedule_hour, schedule_minute = map(int, first_schedule.time.split(":"))
             days_ahead = 7 - current_weekday + first_schedule.day_of_week
-            next_time = now + timedelta(days=days_ahead)
-            return next_time.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+            next_local = now_local + timedelta(days=days_ahead)
+            next_local = next_local.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+            return next_local.astimezone(utc).replace(tzinfo=None)
 
         except Exception as e:
             logger.error(f"Error getting next scheduled time from DB: {e}")

@@ -190,9 +190,8 @@ class VideoGenerator:
         hook_fontsize = 80 if len(hook_lines) <= 3 else 70
         payoff_fontsize = 72 if len(payoff_lines) <= 4 else 62
 
-        # Generate random white-ish colors for hook and payoff (changes each reel)
+        # Generate random white-ish colors for hook (changes each reel)
         hook_color = self._generate_random_white_color()
-        payoff_color = self._generate_random_white_color()
 
         ass_content = f"""[Script Info]
         Title: Two-Part Quote
@@ -205,12 +204,12 @@ class VideoGenerator:
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
         Style: Hook,Impact,{hook_fontsize},{hook_color},&H000000FF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,4,2,2,60,60,200,1
-        Style: Payoff,Impact,{payoff_fontsize},{payoff_color},&H000000FF,&H00FF6600,&H64000000,-1,0,0,0,100,100,0,0,1,4,3,2,60,60,300,1
+        Style: Payoff,Impact,{payoff_fontsize},&H00FFFFFF,&H000000FF,&H00FF6600,&H64000000,-1,0,0,0,100,100,0,0,1,4,3,2,60,60,300,1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-        Dialogue: 0,0:00:0.20,0:00:4.50,Hook,,0,0,0,,{{\\q2\\fad(400,200)\\t(200,1800,\\fscx115\\fscy115)\\t(3500,4500,\\fscx100\\fscy100)}}{hook_wrapped}
-        Dialogue: 1,0:00:4.50,0:00:13.00,Payoff,,0,0,0,,{{\\q2\\bord3\\shad4\\fad(300,500)\\t(0,700,\\fscx112\\fscy112\\c&H00FF00FF&)\\t(700,3500,\\c&H0000FFFF&)\\t(3500,5500,\\fscx100\\fscy100)}}{payoff_wrapped}
+        Dialogue: 0,0:00:0.00,0:00:4.50,Hook,,0,0,0,,{{\\q2\\fad(400,200)\\t(200,1800,\\fscx115\\fscy115)\\t(3500,4500,\\fscx100\\fscy100)}}{hook_wrapped}
+        Dialogue: 1,0:00:4.50,0:00:13.00,Payoff,,0,0,0,,{{\\q2\\bord3\\shad4\\fad(300,500)\\t(0,700,\\fscx112\\fscy112)\\t(3500,5500,\\fscx100\\fscy100)}}{payoff_wrapped}
         """
         ass_path.write_text(ass_content, encoding="utf-8")
     def _ffmpeg_filter_escape(self, s: str) -> str:
