@@ -32,6 +32,7 @@ class ContentSuggestion:
     hashtags: List[str]
     music_search_terms: List[str]  # Search terms for finding phonk music
     video_search_terms: List[str]  # Search terms for finding background videos
+    video_description: str = ""  # Detailed visual description for custom video generation
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -42,7 +43,8 @@ class ContentSuggestion:
             "video_style": self.video_style,
             "hashtags": self.hashtags,
             "music_search_terms": self.music_search_terms,
-            "video_search_terms": self.video_search_terms
+            "video_search_terms": self.video_search_terms,
+            "video_description": self.video_description
         }
 
 
@@ -187,45 +189,55 @@ Generate ONE powerful quote, nothing else:"""
             return self._fallback_two_part_quote()
 
         try:
-            # Vary the emphasis to get different types of hooks
+            # Create DIRECT, ACCUSATORY hooks that stop the scroll immediately
+            # Format: "You're doing X" or "X is killing you" or "Nobody talks about Y"
             hook_styles = [
-                "Something that seems obvious but people get wrong",
-                "A counterintuitive truth about how the world actually works",
-                "Something people are too afraid to say out loud",
-                "A shocking observation about human nature",
-                "A hidden reason why most people fail"
+                "Start with a direct accusation like 'You're poor because...' or 'You'll die because...'",
+                "Make a bold statement: 'Men who [do specific thing]...' or 'Rich people know...'",
+                "Start with what people WON'T admit: 'Nobody wants to say it but...' or 'They'll never tell you...'",
+                "Use 'comfort is' format: 'Comfort is killing you' or 'Comfort is your greatest enemy'",
+                "Direct observation about failure: 'You fail because...' or 'Most people never...'"
             ]
             hook_style = random.choice(hook_styles)
 
             prompt = f"""Generate a two-part "redpill" quote for a short video reel (10-13 seconds total).
 
-DIVERSITY REQUIREMENT:
-Hook style should be: {hook_style}
-Make it ORIGINAL - not a recycled quote you've seen before.
-Avoid: "success is lonely", "most people are sheep", "discipline wins", "comfort kills you"
+HOOK STYLE REQUIREMENT: {hook_style}
+
+CRITICAL FOR STOPPING SCROLL:
+- HOOK must be a DIRECT STATEMENT or ACCUSATION, not a question
+- 3-8 words MAXIMUM (shorter = better for immediate impact)
+- Examples of POWERFUL hooks:
+  * "You'll die satisfying others"
+  * "Comfort is killing you"
+  * "No one is coming to save you"
+  * "You're poor because you think like them"
+  * "Rich people never say this"
+- Examples of WEAK hooks (avoid):
+  * "Something changes when..."
+  * "Wait until you see this..."
+  * "You need to know..."
+
+ORIGINALITY: Make it FRESH - avoid recycled quotes like "success is lonely", "most people are sheep", "discipline wins"
 
 Structure:
-1. HOOK (first part, 4 seconds): A provocative/curious statement that makes people stop scrolling
-   - 6-10 words
-   - Should make viewers curious for the payoff
-   - No complete thought, end with implied continuation
-   - MUST BE UNIQUE and not overused
-   - Examples: "Everything you know is wrong because...", "The truth they hide from you is...", "Most people are slaves and don't realize..."
+1. HOOK (first 4.5 seconds): 
+   - {hook_style}
+   - 3-8 words maximum
+   - Provocative/accusatory statement
+   - Makes viewers pause and want to know more
 
-2. PAYOFF (second part, 6-9 seconds): The powerful truth/realization
-   - 15-25 words
-   - Must be profound and thought-provoking
-   - Completes the hook's promise
-   - Genuine insight, not buzzwords
-   - Examples: "...you're chasing someone else's dream instead of building your own empire", "...they profit from your ignorance and compliance"
+2. PAYOFF (last 8-9 seconds):
+   - Explains WHY or shows CONSEQUENCE in fewest words possible
+   - 3-6 words MAXIMUM (ultra-short, brutal, unforgettable)
+   - One devastating truth or consequence
+   - Must hit hard and be memorable
 
-Format your response EXACTLY as JSON:
+Format your response EXACTLY as JSON (no markdown, no explanations):
 {{
-    "hook": "Your hook text here",
-    "payoff": "Your payoff text here"
-}}
-
-Generate ONLY the JSON, nothing else."""
+    "hook": "Your hook text here (3-8 words)",
+    "payoff": "Your payoff text here (3-6 words ONLY)"
+}}"""
 
             response = self.genai_client.models.generate_content(
                 model=self.model_name,
@@ -343,7 +355,8 @@ Generate a JSON response with:
 5. "video_style": Background video description
 6. "hashtags": Array of MAXIMUM 3 relevant hashtags
 7. "music_search_terms": Array of 3-5 search terms to find the perfect phonk music (e.g., ["aggressive phonk", "drift phonk bass boosted", "brazilian phonk 808"])
-8. "video_search_terms": Array of 3-5 search terms to find the perfect background video (e.g., ["night city drive 4k", "tokyo drift aesthetic", "urban cyberpunk"])
+8. "video_search_terms": Array of 3-5 STRIKING search terms - MUST include animals, nature power, or extreme action. NO generic city/dark themes. Use: lions, tigers, eagles, sharks, storms, fire, volcanoes, explosions, racing, fighting. Examples: ["lion hunting predator 4k", "tiger roaring intense wild", "eagle diving attack", "storm lightning power", "motorcycle racing speed", "boxer fighting intense"]
+9. "video_description": Detailed visual description for video editor (e.g., "Close-up of lion's eyes, slow-motion, then cut to tiger roaring, dramatic lighting, fire in background"). This helps create custom visuals.
 
 Requirements:
 - Quote must be POWERFUL, ORIGINAL, and thought-provoking
@@ -394,8 +407,25 @@ Output ONLY valid JSON, no explanations:"""
             caption = caption + " #Motivation #Mindset #Success"
 
         # Ensure caption is under 150 chars
+        # Preserve hashtags by truncating only the main text portion
         if len(caption) > 150:
-            caption = caption[:150].rsplit(' ', 1)[0].rstrip('#').strip() + '...'
+            # Find where hashtags start
+            hashtag_match = re.search(r'\s(#\w+.*?)$', caption)
+            if hashtag_match:
+                # Separate main text and hashtags
+                hashtags_portion = hashtag_match.group(1)
+                main_text = caption[:hashtag_match.start()].strip()
+                # Truncate main text to fit within limit, leaving room for hashtags
+                max_main_len = 150 - len(hashtags_portion) - 4  # -4 for space + "..."
+                if max_main_len > 10:  # Ensure we have at least some text
+                    main_text = main_text[:max_main_len].rsplit(' ', 1)[0].strip() + '...'
+                    caption = main_text + " " + hashtags_portion
+                else:
+                    # Not enough room, just keep hashtags
+                    caption = hashtags_portion
+            else:
+                # No hashtags found, truncate normally
+                caption = caption[:150].rsplit(' ', 1)[0].strip() + '...'
 
         return caption.strip()
 
@@ -427,7 +457,8 @@ Output ONLY valid JSON, no explanations:"""
                 video_style=data.get("video_style", "urban_night_drive"),
                 hashtags=hashtags,
                 music_search_terms=data.get("music_search_terms", ["phonk music", "bass boosted phonk"]),
-                video_search_terms=data.get("video_search_terms", ["aesthetic video", "urban night"])
+                video_search_terms=data.get("video_search_terms", ["aesthetic video", "urban night"]),
+                video_description=data.get("video_description", "")
             )
 
         except Exception as e:
@@ -577,82 +608,98 @@ Output ONLY valid JSON, no explanations:"""
         ]
 
         # Fallback music and video search terms - EXPANDED for diversity
+        # IMPORTANT: Music searches emphasize hard-hitting beats, no soft intros
         music_searches = {
             "redpill_reality": [
-                "aggressive phonk", "drift phonk bass", "brazilian phonk",
-                "hard trap beats", "dark trap instrumental", "boom bap hip hop"
+                "aggressive phonk hard drop", "drift phonk bass boosted", "brazilian phonk intense",
+                "hard trap beats fast", "dark trap instrumental aggressive", "boom bap hip hop heavy"
             ],
             "sigma_mindset": [
-                "dark phonk", "memphis phonk", "sigma phonk",
-                "underground trap", "chicago footwork", "memphis blues"
+                "dark phonk hard beat", "memphis phonk fast tempo", "sigma phonk aggressive",
+                "underground trap drop heavy", "chicago footwork quick tempo", "hard bass trap"
             ],
             "stoic_philosophy": [
-                "ambient phonk", "chill phonk beats", "lo-fi phonk",
-                "ambient electronic", "meditation music", "zen instrumental"
+                "powerful orchestral music", "dramatic music intense", "epic soundtrack",
+                "building music powerful", "heroic soundtrack", "orchestral powerful"
             ],
             "monk_mode": [
-                "minimal phonk", "deep phonk", "focus phonk",
-                "lo-fi hip hop", "study beats", "focus music"
+                "focused instrumental intense", "deep meditation music", "dark ambient focus",
+                "minimal electronic beats", "hyperfocus music", "concentration soundtrack"
             ],
             "financial_freedom": [
-                "aggressive beats", "motivational hip hop", "success soundtrack",
-                "power music", "gym beats", "pump up music"
+                "powerful motivational music", "inspiring upbeat music", "success anthem beat",
+                "triumph instrumental", "winning music motivational", "victory soundtrack"
             ],
             "self_improvement": [
-                "inspirational instrumental", "epic strings", "cinematic music",
-                "dramatic orchestral", "powerful soundtrack", "hero music"
+                "motivational uplifting music", "intensity workout beat", "powerful instrumental",
+                "epic rise music", "motivational beat fast", "energy surge soundtrack"
             ],
             "brutal_truth": [
-                "heavy bass trap", "dark music", "intense beat",
-                "aggressive instrumental", "raw beats", "street music"
+                "hard aggressive music", "intense dark beat", "heavy bass intense",
+                "aggressive instrumental music", "raw hard beat", "street music hard"
             ],
             "high_value_mindset": [
-                "luxury beats", "premium music", "classy instrumental",
-                "sophisticated jazz", "smooth trap", "elite music"
+                "luxury beat smooth", "premium music instrumental", "classy upbeat music",
+                "sophisticated powerful music", "smooth trap beat", "elite soundtrack"
             ],
             "sigma_gaming": [
-                "aggressive phonk beat dark", "drift phonk racing music", "dark trap beat intense",
-                "sigma grindset phonk", "competitive gaming soundtrack", "motivational trap beat"
+                "aggressive phonk beat dark hard", "drift phonk racing music intense", "dark trap beat maximum",
+                "sigma grindset phonk hard", "competitive gaming soundtrack intense", "motivational trap beat aggressive"
             ]
         }
 
         video_searches = {
             "redpill_reality": [
-                "night city drive 4k", "urban aesthetic", "cyberpunk city",
-                "tokyo night drive", "street racing", "city lights at night"
+                "lion eyes close up predator", "tiger roaring intense wild",
+                "eagle hunting soaring 4k", "fire explosion bright intense",
+                "storm lightning striking power", "hurricane wind force nature",
+                "shark attacking wildlife dramatic", "volcano erupting lava power"
             ],
             "sigma_mindset": [
-                "luxury lifestyle", "supercar driving", "business success",
-                "rich lifestyle", "exotic cars", "mansion interior"
+                "lion hunting power predator", "wolf pack running wild",
+                "fighter boxing intense combat", "samurai sword sharp action",
+                "eagle diving fast hunter", "motorcycle racing extreme speed",
+                "rock climbing intense challenge", "weightlifter lifting maximum power"
             ],
             "stoic_philosophy": [
-                "nature solitude 4k", "meditation visuals", "ancient architecture",
-                "mountain scenery", "peaceful lake", "zen garden"
+                "mountains snow peak vast", "ocean waves massive crashing",
+                "ancient ruins power history", "forest ancient trees majesty",
+                "river flowing powerful nature", "thunder storm dark power",
+                "eagle soaring freedom", "bear standing strength wild"
             ],
             "monk_mode": [
-                "minimal aesthetic", "focus visuals", "monochrome abstract",
-                "empty room", "library", "calm workspace"
+                "meditation zen focus peace", "candle flame glowing", "forest silence nature",
+                "waterfall flowing peaceful", "sunrise dawn calm quiet",
+                "book pages turning knowledge", "empty temple silence"
             ],
             "financial_freedom": [
-                "money and success", "business office", "stock market",
-                "financial growth", "entrepreneur lifestyle", "wealth symbols"
+                "money rain falling gold", "diamonds sparkling wealth luxury",
+                "sports car racing fast", "mansion rooms opulent luxury",
+                "private jet interior exclusive", "yacht ocean luxury lifestyle",
+                "stock market rising up", "gold bars stacked wealth"
             ],
             "self_improvement": [
-                "gym training", "meditation practice", "personal growth",
-                "healthy lifestyle", "motivation montage", "sports training"
+                "gym training intense workout", "athlete running sprinting fast",
+                "boxer fighting intense combat", "martial artist kicking power",
+                "mountain climber ascending", "swimmer diving power water",
+                "sunrise motivation dawn", "fire burning intense energy"
             ],
             "brutal_truth": [
-                "dark aesthetic", "urban grit", "raw reality",
-                "street life", "hard truth", "reality check"
+                "fire burning bright intense", "storm dark ominous power",
+                "lightning strike electricity", "snake predator danger",
+                "volcano erupting power", "earthquake shaking ground",
+                "tornado spinning force", "tsunami wave power"
             ],
             "high_value_mindset": [
-                "premium lifestyle", "luxury brands", "exclusive club",
-                "first class", "vip treatment", "high society"
+                "luxury car sports fast", "mansion opulent interior", "diamonds sparkling",
+                "yacht ocean premium", "private jet luxury", "gold luxury wealth",
+                "private pool exclusive", "champagne luxury celebration"
             ],
             "sigma_gaming": [
-                "chess strategy game 4k cinematic", "racing simulator cockpit view night",
-                "poker professional tournament cinematic", "esports competitive gaming intense",
-                "strategy game warfare tactical", "driving game drift mountain road"
+                "gaming intense focused player", "esports championship winning moment",
+                "racing game cockpit view", "strategy game intense play",
+                "fighting game combat intense", "chess player thinking focus",
+                "poker professional intense", "competitive gaming victory"
             ]
         }
 
@@ -672,7 +719,8 @@ Output ONLY valid JSON, no explanations:"""
             video_style=random.choice(self.VIDEO_STYLES),
             hashtags=["#Motivation", "#Mindset", "#Success"],
             music_search_terms=selected_music_terms,
-            video_search_terms=selected_video_terms
+            video_search_terms=selected_video_terms,
+            video_description=f"Striking {theme} visuals: {', '.join(selected_video_terms)}"
         )
 
 

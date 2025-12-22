@@ -345,8 +345,8 @@ Use buttons below commands for quick actions.
 
 📹 Video: `{reel.video.filename}`
 🎵 Music: `{reel.music.filename}`
-💬 Quote: {reel.quote.text[:50]}...
-✍️ Caption: {reel.caption[:100]}...
+💬 Quote: {reel.quote.text[:60]}...
+✍️ Caption: {reel.caption}
 ⭐ Quality: {reel.quality_score:.2f}
 Status: {reel.status}
                         """
@@ -609,8 +609,8 @@ Data updates as you get engagement on Instagram
 
 📹 Video: `{reel.video.filename}`
 🎵 Music: `{reel.music.filename}`
-💬 Quote: {reel.quote.text[:50]}...
-✍️ Caption: {reel.caption[:100]}...
+💬 Quote: {reel.quote.text[:60]}...
+✍️ Caption: {reel.caption}
 ⭐ Quality: {reel.quality_score:.2f}
                     """
                     await update.message.reply_video(
@@ -723,8 +723,8 @@ Data updates as you get engagement on Instagram
 
 📹 Video: `{reel.video.filename}`
 🎵 Music: `{reel.music.filename}`
-💬 Quote: {reel.quote.text[:50]}...
-✍️ Caption: {reel.caption[:100]}...
+💬 Quote: {reel.quote.text[:60]}...
+✍️ Caption: {reel.caption}
 ⭐ Quality: {reel.quality_score:.2f}
                     """
 
