@@ -57,7 +57,8 @@ class GeminiContentGenerator:
         "brutal_truth",
         "stoic_philosophy",
         "monk_mode",
-        "high_value_mindset"
+        "high_value_mindset",
+        "sigma_gaming"
     ]
 
     PHONK_VIBES = [
@@ -312,10 +313,20 @@ Generate ONLY the JSON, nothing else."""
         ]
         variation_hint = random.choice(variation_instructions)
 
+        # Pick a specific caption style for this generation (not rotate)
+        caption_style_options = [
+            ("QUESTION", "Ask the audience a relatable question like: 'Does this happen to you?', 'Who can relate?', 'Are you ready?' - MUST include 2-3 hashtags at the end"),
+            ("CTA", "Use a call-to-action: 'Send this to someone who needs it', 'Tag a friend', 'Share if you agree', 'Who else feels this?' - MUST include 2-3 hashtags at the end"),
+            ("STATEMENT", "Make a powerful statement - MUST include 2-3 hashtags (#sigmamindset #redpillreality #motivation)")
+        ]
+        selected_style_name, selected_style_desc = random.choice(caption_style_options)
+
         return f"""Generate a complete Instagram Reel content package for a {style} post.
 
 Theme: {theme}
 Style: {style}
+
+{self._get_theme_guidance(theme)}
 
 CRITICAL REQUIREMENT FOR VARIETY:
 {variation_hint}
@@ -324,11 +335,13 @@ Generate something FRESH and SPECIFIC to this theme.
 
 Generate a JSON response with:
 1. "prompt": A powerful 10-15 word quote/truth bomb (redpill style, no fluff, MUST BE ORIGINAL)
-2. "caption": Instagram caption under 150 chars with 2-3 hashtags
+2. "caption": Instagram caption under 150 chars using {selected_style_name} STYLE:
+   {selected_style_desc}
+   CRITICAL: Must include 2-3 hashtags. Make it authentic and engaging, NOT generic.
 3. "theme": The theme category
 4. "music_vibe": Phonk music style description
 5. "video_style": Background video description
-6. "hashtags": Array of 3-5 relevant hashtags
+6. "hashtags": Array of MAXIMUM 3 relevant hashtags
 7. "music_search_terms": Array of 3-5 search terms to find the perfect phonk music (e.g., ["aggressive phonk", "drift phonk bass boosted", "brazilian phonk 808"])
 8. "video_search_terms": Array of 3-5 search terms to find the perfect background video (e.g., ["night city drive 4k", "tokyo drift aesthetic", "urban cyberpunk"])
 
@@ -350,6 +363,42 @@ Requirements:
 
 Output ONLY valid JSON, no explanations:"""
 
+    def _sanitize_caption(self, caption: str) -> str:
+        """
+        Ensure caption has 2-3 hashtags and is under 150 chars.
+
+        Args:
+            caption: Raw caption from API
+
+        Returns:
+            Cleaned caption with 2-3 hashtags
+        """
+        import re
+
+        # Find all hashtags
+        hashtags = re.findall(r'#\w+', caption)
+
+        # Track if we had hashtags originally
+        had_hashtags = len(hashtags) > 0
+
+        # If more than 3 hashtags, keep only the first 3
+        if len(hashtags) > 3:
+            # Remove extra hashtags from the caption
+            caption_text = caption
+            for ht in hashtags[3:]:
+                caption_text = caption_text.replace(ht, "").strip()
+            caption = caption_text
+
+        # If NO hashtags, add default ones
+        if not had_hashtags:
+            caption = caption + " #Motivation #Mindset #Success"
+
+        # Ensure caption is under 150 chars
+        if len(caption) > 150:
+            caption = caption[:150].rsplit(' ', 1)[0].rstrip('#').strip() + '...'
+
+        return caption.strip()
+
     def _parse_gemini_response(self, response_text: str) -> ContentSuggestion:
         """Parse Gemini JSON response into ContentSuggestion."""
         try:
@@ -362,13 +411,21 @@ Output ONLY valid JSON, no explanations:"""
 
             data = json.loads(text)
 
+            # Sanitize caption to ensure max 3 hashtags and 150 chars
+            caption = self._sanitize_caption(data.get("caption", ""))
+
+            # Limit hashtags array to maximum 3
+            hashtags = data.get("hashtags", [])
+            if isinstance(hashtags, list) and len(hashtags) > 3:
+                hashtags = hashtags[:3]
+
             return ContentSuggestion(
                 prompt=data.get("prompt", ""),
-                caption=data.get("caption", ""),
+                caption=caption,
                 theme=data.get("theme", "general"),
                 music_vibe=data.get("music_vibe", "aggressive_bass_heavy"),
                 video_style=data.get("video_style", "urban_night_drive"),
-                hashtags=data.get("hashtags", []),
+                hashtags=hashtags,
                 music_search_terms=data.get("music_search_terms", ["phonk music", "bass boosted phonk"]),
                 video_search_terms=data.get("video_search_terms", ["aesthetic video", "urban night"])
             )
@@ -474,6 +531,25 @@ Output ONLY valid JSON, no explanations:"""
         ]
         return random.choice(two_part_quotes)
 
+    def _get_theme_guidance(self, theme: str) -> str:
+        """Get specific guidance for each theme."""
+        guidance_map = {
+            "sigma_gaming": "Theme Guidance: Sigma Gaming - Strategic mindset through competitive gaming metaphors\n"
+                           "- Hook: Reference chess moves, racing strategy, competitive advantage, game tactics\n"
+                           "- Payoff: Connect gaming wisdom to real-life strategic thinking and winning mindset\n"
+                           "- Tone: Competitive, strategic, focused, disciplined, high-stakes\n"
+                           "- Examples: 'Think 3 moves ahead', 'Winners study the opponent', 'Strategy beats luck', 'Every decision is a move on the board'",
+            "redpill_reality": "Theme Guidance: Redpill Reality - Awakening to harsh truths\n"
+                              "- Hook: Reveal uncomfortable truths people ignore\n"
+                              "- Payoff: The deeper reality beneath comfortable lies\n"
+                              "- Tone: Direct, no-nonsense, eye-opening",
+            "sigma_mindset": "Theme Guidance: Sigma Mindset - Independent, strategic, disciplined\n"
+                            "- Hook: Challenge conventional thinking\n"
+                            "- Payoff: The sigma way of achieving mastery\n"
+                            "- Tone: Strong, independent, high-value",
+        }
+        return guidance_map.get(theme, f"Theme Guidance: {theme.replace('_', ' ').title()}\n- Focus on authenticity and originality for this theme")
+
     def _fallback_content_idea(
         self,
         theme: Optional[str] = None,
@@ -483,7 +559,17 @@ Output ONLY valid JSON, no explanations:"""
         theme = theme or random.choice(self.CONTENT_THEMES)
         prompt = self._fallback_redpill_prompt()
 
+        # Fallback captions with engagement styles (questions, CTAs, statements)
         captions = [
+            # QUESTION style
+            f"Does this resonate with you? {prompt} #Motivation #Reality",
+            f"Who can relate? {prompt} #Truth #Mindset",
+            f"Are you ready for this? {prompt} #SigmaMindset #Success",
+            # CTA style
+            f"Tag someone who needs to hear this: {prompt} 💯",
+            f"Send this to someone who's sleeping on their potential {prompt} 🐺",
+            f"Share with a friend who gets it: {prompt} #RedPill",
+            # STATEMENT style
             f"{prompt} 💪 #Motivation #Mindset #Success",
             f"Real talk: {prompt} 🔥 #RedPill #Truth #Growth",
             f"{prompt} ⚡ Time to level up. #Hustle #Grind #Win",
@@ -523,6 +609,10 @@ Output ONLY valid JSON, no explanations:"""
             "high_value_mindset": [
                 "luxury beats", "premium music", "classy instrumental",
                 "sophisticated jazz", "smooth trap", "elite music"
+            ],
+            "sigma_gaming": [
+                "aggressive phonk beat dark", "drift phonk racing music", "dark trap beat intense",
+                "sigma grindset phonk", "competitive gaming soundtrack", "motivational trap beat"
             ]
         }
 
@@ -558,6 +648,11 @@ Output ONLY valid JSON, no explanations:"""
             "high_value_mindset": [
                 "premium lifestyle", "luxury brands", "exclusive club",
                 "first class", "vip treatment", "high society"
+            ],
+            "sigma_gaming": [
+                "chess strategy game 4k cinematic", "racing simulator cockpit view night",
+                "poker professional tournament cinematic", "esports competitive gaming intense",
+                "strategy game warfare tactical", "driving game drift mountain road"
             ]
         }
 
