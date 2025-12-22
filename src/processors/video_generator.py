@@ -181,14 +181,15 @@ class VideoGenerator:
         hook = " ".join(hook.strip().split())
         payoff = " ".join(payoff.strip().split())
 
-        hook_lines = textwrap.wrap(hook, width=20, break_long_words=False, break_on_hyphens=False)
+        hook_lines = textwrap.wrap(hook, width=18, break_long_words=False, break_on_hyphens=False)
         hook_wrapped = r"\N".join(hook_lines)
 
-        payoff_lines = textwrap.wrap(payoff, width=22, break_long_words=False, break_on_hyphens=False)
+        payoff_lines = textwrap.wrap(payoff, width=20, break_long_words=False, break_on_hyphens=False)
         payoff_wrapped = r"\N".join(payoff_lines)
 
-        hook_fontsize = 80 if len(hook_lines) <= 3 else 70
-        payoff_fontsize = 72 if len(payoff_lines) <= 4 else 62
+        # Increased font sizes for better visibility on phone (audience feedback: text too small)
+        hook_fontsize = 95 if len(hook_lines) <= 2 else 85 if len(hook_lines) <= 3 else 75
+        payoff_fontsize = 85 if len(payoff_lines) <= 3 else 75 if len(payoff_lines) <= 4 else 65
 
         # Generate random white-ish colors for hook (changes each reel)
         hook_color = self._generate_random_white_color()
@@ -203,13 +204,13 @@ class VideoGenerator:
 
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-        Style: Hook,Impact,{hook_fontsize},{hook_color},&H000000FF,&H00000000,&H64000000,1,0,0,0,100,100,0,0,1,4,2,2,60,60,200,1
-        Style: Payoff,Impact,{payoff_fontsize},&H00FFFFFF,&H000000FF,&H00FF6600,&H64000000,-1,0,0,0,100,100,0,0,1,4,3,2,60,60,300,1
+        Style: Hook,Impact,{hook_fontsize},{hook_color},&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,5,3,2,60,60,150,1
+        Style: Payoff,Impact,{payoff_fontsize},&H00FFFFFF,&H000000FF,&H00FF6600,&H64000000,-1,0,0,0,100,100,0,0,1,5,4,2,60,60,250,1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-        Dialogue: 0,0:00:0.00,0:00:4.50,Hook,,0,0,0,,{{\\q2\\fad(400,200)\\t(200,1800,\\fscx115\\fscy115)\\t(3500,4500,\\fscx100\\fscy100)}}{hook_wrapped}
-        Dialogue: 1,0:00:4.50,0:00:13.00,Payoff,,0,0,0,,{{\\q2\\bord3\\shad4\\fad(300,500)\\t(0,700,\\fscx112\\fscy112)\\t(3500,5500,\\fscx100\\fscy100)}}{payoff_wrapped}
+        Dialogue: 0,0:00:0.00,0:00:4.50,Hook,,0,0,0,,{{\\q2\\fad(100,200)\\t(0,1500,\\fscx105\\fscy105)\\t(3000,4500,\\fscx100\\fscy100)}}{hook_wrapped}
+        Dialogue: 1,0:00:4.50,0:00:13.00,Payoff,,0,0,0,,{{\\q2\\bord4\\shad5\\fad(200,400)\\t(0,600,\\fscx110\\fscy110)\\t(3500,5500,\\fscx100\\fscy100)}}{payoff_wrapped}
         """
         ass_path.write_text(ass_content, encoding="utf-8")
     def _ffmpeg_filter_escape(self, s: str) -> str:

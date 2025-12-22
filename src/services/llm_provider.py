@@ -417,8 +417,25 @@ class LLMProvider:
             caption = caption + " #Motivation #Mindset #Success"
 
         # Ensure caption is under 150 chars
+        # Preserve hashtags by truncating only the main text portion
         if len(caption) > 150:
-            caption = caption[:150].rsplit(' ', 1)[0].rstrip('#').strip() + '...'
+            # Find where hashtags start
+            hashtag_match = re.search(r'\s(#\w+.*?)$', caption)
+            if hashtag_match:
+                # Separate main text and hashtags
+                hashtags_portion = hashtag_match.group(1)
+                main_text = caption[:hashtag_match.start()].strip()
+                # Truncate main text to fit within limit, leaving room for hashtags
+                max_main_len = 150 - len(hashtags_portion) - 4  # -4 for space + "..."
+                if max_main_len > 10:  # Ensure we have at least some text
+                    main_text = main_text[:max_main_len].rsplit(' ', 1)[0].strip() + '...'
+                    caption = main_text + " " + hashtags_portion
+                else:
+                    # Not enough room, just keep hashtags
+                    caption = hashtags_portion
+            else:
+                # No hashtags found, truncate normally
+                caption = caption[:150].rsplit(' ', 1)[0].strip() + '...'
 
         return caption.strip()
 
