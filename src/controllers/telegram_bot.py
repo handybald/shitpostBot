@@ -791,17 +791,21 @@ Data updates as you get engagement on Instagram
             # Handle both single-part (quote) and two-part (hook+payoff) reels
             is_two_part = reel_data.get('is_two_part', False)
             if is_two_part:
-                quote_text = f"🎣 Hook: {reel_data.get('hook', 'N/A')[:40]}\n💥 Payoff: {reel_data.get('payoff', 'N/A')[:40]}"
+                hook = reel_data.get('hook', 'N/A')
+                payoff = reel_data.get('payoff', 'N/A')
+                quote_text = f"🎣 *Hook:* {hook}\n💥 *Payoff:* {payoff}"
             else:
-                quote_text = f"💬 Quote: {reel_data.get('quote', 'N/A')[:60]}"
+                quote = reel_data.get('quote', 'N/A')
+                quote_text = f"💬 *Quote:* {quote}"
 
+            caption = reel_data.get('caption', 'N/A')
             preview_msg = f"""
 🎬 *New Reel Generated*
 
 📹 Video: `{reel_data.get('video_name', 'N/A')}`
 🎵 Music: `{reel_data.get('music_name', 'N/A')}`
 {quote_text}
-✍️ Caption: {reel_data.get('caption', 'N/A')[:80]}
+✍️ *Caption:* {caption}
 ⭐ Quality: {reel_data.get('quality_score', 0):.2f}
 
 Ready for approval?
