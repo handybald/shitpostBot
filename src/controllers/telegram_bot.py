@@ -691,6 +691,8 @@ Data updates as you get engagement on Instagram
 
     async def button_preview(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle preview button callback."""
+        from telegram.error import BadRequest
+
         query = update.callback_query
         logger.info(f"Preview button clicked: {query.data}")
 
@@ -699,7 +701,10 @@ Data updates as you get engagement on Instagram
             logger.info(f"Preview requested for reel {reel_id}")
         except Exception as e:
             logger.error(f"Failed to parse preview data: {e}")
-            await query.answer(f"Invalid preview data")
+            try:
+                await query.answer(f"Invalid preview data")
+            except BadRequest:
+                logger.warning("Query timeout - callback expired")
             return
 
         session = get_session()
@@ -709,8 +714,17 @@ Data updates as you get engagement on Instagram
 
             if not reel:
                 logger.warning(f"Reel {reel_id} not found in database")
-                await query.answer("Reel not found")
+                try:
+                    await query.answer("Reel not found")
+                except BadRequest:
+                    logger.warning("Query timeout - callback expired")
                 return
+
+            # Acknowledge the callback immediately to avoid timeout
+            try:
+                await query.answer("⏳ Loading preview...", show_alert=False)
+            except BadRequest:
+                logger.warning("Query timeout - could not acknowledge callback")
 
             # Send the actual video file as preview
             video_path = Path(reel.output_path)
@@ -723,7 +737,7 @@ Data updates as you get engagement on Instagram
 
 📹 Video: `{reel.video.filename}`
 🎵 Music: `{reel.music.filename}`
-💬 Quote: {reel.quote.text[:60]}...
+💬 Quote: {reel.quote.text}
 ✍️ Caption: {reel.caption}
 ⭐ Quality: {reel.quality_score:.2f}
                     """
@@ -754,8 +768,6 @@ Data updates as you get engagement on Instagram
                             parse_mode=ParseMode.MARKDOWN,
                             reply_markup=keyboard
                         )
-
-                await query.answer("✅ Preview loaded with actions", show_alert=False)
             else:
                 # Fallback to text preview if file not found
                 logger.warning(f"Video file not found: {video_path}")
@@ -764,18 +776,25 @@ Data updates as you get engagement on Instagram
 
 📹 Video: `{reel.video.filename}`
 🎵 Music: `{reel.music.filename}`
-💬 Quote: {reel.quote.text[:50]}...
-✍️ Caption: {reel.caption[:100]}...
+💬 Quote: {reel.quote.text}
+✍️ Caption: {reel.caption}
 ⭐ Quality: {reel.quality_score:.2f}
 
 ⚠️ Video file not found: {video_path}
                 """
                 await query.edit_message_text(preview_text, parse_mode=ParseMode.MARKDOWN)
-                await query.answer("⚠️ Video file missing", show_alert=True)
 
+        except BadRequest as e:
+            if "Query is too old" in str(e) or "response timeout" in str(e):
+                logger.warning(f"Preview request timed out (callback expired): {e}")
+            else:
+                logger.error(f"Telegram API error: {e}")
         except Exception as e:
             logger.error(f"Preview error: {e}")
-            await query.answer(f"Error: {str(e)}", show_alert=True)
+            try:
+                await query.answer(f"Error: {str(e)}", show_alert=True)
+            except BadRequest:
+                logger.warning("Query timeout - could not send error message")
         finally:
             session.close()
 
@@ -852,8 +871,7 @@ Ready for approval?
                 try:
                     await app.bot.send_message(
                         chat_id=admin_id,
-                        text=f"{emoji} {message}",
-                        parse_mode=ParseMode.MARKDOWN
+                        text=f"{emoji} {message}"
                     )
                 except Exception as e:
                     logger.error(f"Failed to send notification to admin {admin_id}: {e}")

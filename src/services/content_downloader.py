@@ -9,7 +9,7 @@ Uses AI-generated search terms to find and download copyright-free content from:
 import os
 import requests
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import random
 import time
 
@@ -51,8 +51,9 @@ class ContentDownloader:
         self,
         search_terms: List[str],
         theme: str,
-        filename_prefix: Optional[str] = None
-    ) -> Optional[Path]:
+        filename_prefix: Optional[str] = None,
+        excluded_urls: Optional[set] = None
+    ) -> Optional[Dict[str, Any]]:
         """
         Download a video from Pexels using search terms.
 
@@ -60,13 +61,36 @@ class ContentDownloader:
             search_terms: List of search terms to try
             theme: Content theme for organizing
             filename_prefix: Optional prefix for filename
+            excluded_urls: Set of URLs to skip (for uniqueness)
 
         Returns:
             Path to downloaded file, or None if failed
         """
         if not self.pexels_api_key or self.pexels_api_key == "your_pexels_api_key_here":
             logger.error("Pexels API key required - get free at https://www.pexels.com/api/")
-            return None
+            # Fallback to YouTube if Pexels key is missing
+            return self._download_video_youtube(search_terms, theme, filename_prefix)
+
+        # PRIORITIZE YouTube for HAZARDOUS content (Pexels doesn't allow violence/hunting)
+        hazardous_themes = ["redpill_reality", "sigma_mindset", "brutal_truth", "sigma_gaming"]
+        is_hazardous_search = any(x in " ".join(search_terms).lower() for x in ["hunt", "kill", "fight", "attack", "predator", "blood", "war"])
+        
+        if theme in hazardous_themes or is_hazardous_search:
+            logger.info(f"Theme '{theme}' or search terms detected as hazardous - Preferring Reddit/YouTube source...")
+            
+            # 1. Try Reddit first (most raw/authentic)
+            reddit_path = self._download_video_reddit(theme, filename_prefix, excluded_urls)
+            if reddit_path:
+                return reddit_path
+
+            # 2. Fallback to YouTube
+            logger.info("Reddit scrape failed or no content, falling back to YouTube...")
+            yt_path = self._download_video_youtube(search_terms, theme, filename_prefix)
+            if yt_path:
+                return yt_path
+            
+            # If both fail, fall back to Pexels (though it might be soft)
+            logger.warning("YouTube download failed, falling back to Pexels...")
 
         # Try each search term until one works
         for search_term in search_terms:
@@ -83,7 +107,12 @@ class ContentDownloader:
                 # Skip if already exists
                 if output_path.exists():
                     logger.info(f"Video already exists: {output_filename}")
-                    return output_path
+                    return {
+                        "path": output_path,
+                        "url": "existing_file",
+                        "source": "pexels",
+                        "source_id": "unknown"
+                    }
 
                 logger.info(f"Searching Pexels for: '{search_term}'")
 
@@ -198,7 +227,12 @@ class ContentDownloader:
                     except Exception as e:
                         logger.warning(f"Could not normalize video, using as-is: {e}")
 
-                    return output_path
+                    return {
+                        "path": output_path,
+                        "url": video_file["link"],
+                        "source": "pexels",
+                        "source_id": str(video["id"])
+                    }
                 else:
                     logger.warning(f"Failed to download video file: {video_response.status_code}")
                     continue
@@ -213,7 +247,211 @@ class ContentDownloader:
             # Rate limit (Pexels allows 200 requests/hour)
             time.sleep(1)
 
+        # If Pexels fails or returns nothing, try YouTube (better for specific/hazardous content)
+        logger.info("Pexels failed, trying YouTube for video content...")
+        youtube_path = self._download_video_youtube(search_terms, theme, filename_prefix)
+        if youtube_path:
+            return youtube_path
+
         logger.error("Failed to download video with any search term")
+        return None
+
+    def _download_video_reddit(
+        self,
+        theme: str,
+        filename_prefix: Optional[str] = None,
+        excluded_urls: Optional[set] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Download video from Reddit (r/NatureIsMetal, etc.) for hazardous content.
+        Does not use search terms, but fetches 'Top of Week' from relevant subreddits.
+        """
+        import sys
+        import subprocess
+        
+        # Subreddits for hazardous content
+        subreddits = ["NatureIsMetal", "HardcoreNature"]
+        if "fight" in theme or "sigma" in theme:
+            subreddits.append("fightporn")
+        
+        for subreddit in subreddits:
+            try:
+                logger.info(f"Checking r/{subreddit} for top content...")
+                headers = {"User-Agent": "ShitPostBot/1.0"}
+                url = f"https://www.reddit.com/r/{subreddit}/top.json?limit=25&t=week"
+                
+                response = requests.get(url, headers=headers, timeout=10)
+                if response.status_code != 200:
+                    logger.warning(f"Failed to access r/{subreddit}: {response.status_code}")
+                    continue
+                
+                data = response.json()
+                posts = data.get("data", {}).get("children", [])
+                
+                # Collect ALL valid video candidates first
+                candidates = []
+                for post in posts:
+                    post_data = post["data"]
+                    video_url = post_data.get("url")
+                    
+                    # Check uniqueness
+                    if excluded_urls and video_url in excluded_urls:
+                        logger.debug(f"Skipping duplicate Reddit video: {video_url}")
+                        continue
+
+                    # Check if it's a video
+                    is_video = post_data.get("is_video") or \
+                               video_url.endswith(".mp4") or \
+                               "v.redd.it" in video_url or \
+                               "imgur.com" in video_url
+                               
+                    if is_video:
+                        candidates.append(post_data)
+                
+                if not candidates:
+                    logger.info(f"No video candidates found in r/{subreddit}")
+                    continue
+                    
+                # Pick a random video from candidates to ensure variety
+                logger.info(f"Found {len(candidates)} candidates in r/{subreddit}. Picking random one...")
+                selected_post = random.choice(candidates)
+                
+                video_url = selected_post.get("url")
+                title = selected_post.get("title", "reddit_video")
+                
+                # Generate filename
+                if filename_prefix:
+                    output_filename = f"{filename_prefix}_{theme}_reddit.mp4"
+                else:
+                    safe_title = "".join(x for x in title if x.isalnum() or x in "_")[:30]
+                    # Append random ID to filename to avoid overwrites and allow duplicates if needed
+                    import uuid
+                    rnd_id = str(uuid.uuid4())[:4]
+                    output_filename = f"{safe_title}_{theme}_{rnd_id}_reddit.mp4"
+                    
+                output_path = self.video_dir / output_filename
+                
+                # Skip if EXACT file exists (unlikely with random ID now)
+                if output_path.exists():
+                    logger.info(f"Reddit video already exists: {output_filename}")
+                    return {
+                        "path": output_path,
+                        "url": video_url,
+                        "source": "reddit",
+                        "source_id": selected_post.get("id")
+                    }
+                    
+                logger.info(f"Downloading from Reddit: {title} ({video_url})")
+                
+                # Use yt-dlp to download
+                cmd = [
+                    sys.executable, "-m", "yt_dlp",
+                    "-f", "bestvideo[ext=mp4][vcodec^=avc]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                    "-o", output_path.as_posix(),
+                    "--no-playlist",
+                    "--quiet",
+                    "--no-warnings",
+                    video_url
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                
+                if result.returncode == 0 and output_path.exists():
+                    size_mb = output_path.stat().st_size / 1024 / 1024
+                    logger.info(f"✅ Downloaded Reddit video: {output_filename} ({size_mb:.1f} MB)")
+                    return {
+                        "path": output_path,
+                        "url": video_url,
+                        "source": "reddit",
+                        "source_id": selected_post.get("id")
+                    }
+                else:
+                    logger.warning(f"yt-dlp failed for Reddit URL {video_url}: {result.stderr}")
+                    continue
+                        
+            except Exception as e:
+                logger.error(f"Error scraping Reddit r/{subreddit}: {e}")
+                continue
+                
+        return None
+
+    def _download_video_youtube(
+        self,
+        search_terms: List[str],
+        theme: str,
+        filename_prefix: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Download video from YouTube using yt-dlp."""
+        import sys
+        import subprocess
+        
+        for search_term in search_terms:
+            try:
+                # Generate filename
+                if filename_prefix:
+                    output_filename = f"{filename_prefix}_{theme}_yt.mp4"
+                else:
+                    safe_term = search_term.replace(" ", "_").replace("/", "_")[:30]
+                    output_filename = f"{safe_term}_{theme}_yt.mp4"
+
+                output_path = self.video_dir / output_filename
+                
+                if output_path.exists():
+                    return {
+                        "path": output_path,
+                        "url": f"https://www.youtube.com/results?search_query={search_term}", # Approx URL
+                        "source": "youtube",
+                        "source_id": output_filename
+                    }
+
+                logger.info(f"Searching YouTube for: '{search_term}'")
+                
+                # Check for "hazardous" or "viral" themes where we want raw content (not stock)
+                is_viral_theme = any(x in theme for x in ["sigma", "redpill", "brutal", "motivation", "nature"])
+                
+                if is_viral_theme:
+                    # Search for Shorts/Vertical content which is often raw/viral style
+                    # We remove "stock footage" to get actual clips (e.g. nature, fights)
+                    search_query = f"{search_term} #shorts"
+                else:
+                    # For generic background, look for nice stock footage
+                    search_query = f"{search_term} stock footage no copyright"
+                
+                # Search for high quality video
+                yt_search = f"ytsearch1:{search_query}"
+                
+                cmd = [
+                    sys.executable, "-m", "yt_dlp",
+                    # Enforce H.264 (AVC) to avoid AV1 decoding errors
+                    "-S", "codec:h264",
+                    "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                    "-o", output_path.as_posix(),
+                    # Remove download-sections to avoid ffmpeg errors
+                    # VideoGenerator will handle trimming later
+                    "--no-playlist",
+                    "--quiet",
+                    "--no-warnings",
+                    yt_search
+                ]
+                
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                
+                if result.returncode == 0 and output_path.exists():
+                    size_mb = output_path.stat().st_size / 1024 / 1024
+                    logger.info(f"✅ Downloaded YouTube video: {output_filename} ({size_mb:.1f} MB)")
+                    return {
+                        "path": output_path,
+                        "url": f"https://www.youtube.com/results?search_query={search_term}",
+                        "source": "youtube",
+                        "source_id": output_filename
+                    }
+                else:
+                    logger.warning(f"yt-dlp video download failed for '{search_term}': {result.stderr}")
+                    
+            except Exception as e:
+                logger.error(f"Error downloading YouTube video: {e}")
+                continue
+                
         return None
 
     def download_music(
@@ -263,8 +501,10 @@ class ContentDownloader:
                 yt_search = f"ytsearch1:{search_term} no copyright"
 
                 # Download with yt-dlp (download best audio directly, no conversion needed)
+                # Use sys.executable -m yt_dlp to ensure we use the installed package in venv
+                import sys
                 cmd = [
-                    "yt-dlp",
+                    sys.executable, "-m", "yt_dlp",
                     "-f", "bestaudio[ext=m4a]/bestaudio",  # Download m4a directly (no conversion)
                     "-o", output_path.as_posix(),
                     "--no-playlist",
@@ -302,13 +542,15 @@ class ContentDownloader:
 
     def download_content_for_idea(
         self,
-        content_idea
+        content_idea,
+        excluded_urls: Optional[set] = None
     ) -> dict:
         """
         Download both video and music for a ContentSuggestion.
 
         Args:
             content_idea: ContentSuggestion from Gemini
+            excluded_urls: Set of video URLs to skip
 
         Returns:
             Dict with video_path and music_path (or None if failed)
@@ -316,9 +558,10 @@ class ContentDownloader:
         logger.info(f"Downloading content for theme: {content_idea.theme}")
 
         # Download video
-        video_path = self.download_video(
+        video_data = self.download_video(
             search_terms=content_idea.video_search_terms,
-            theme=content_idea.theme
+            theme=content_idea.theme,
+            excluded_urls=excluded_urls
         )
 
         # Download music
@@ -328,6 +571,7 @@ class ContentDownloader:
         )
 
         return {
-            "video_path": video_path,
+            "video_path": video_data["path"] if video_data else None,
+            "video_data": video_data,
             "music_path": music_path
         }

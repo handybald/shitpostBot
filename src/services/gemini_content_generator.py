@@ -180,10 +180,10 @@ Generate ONE powerful quote, nothing else:"""
             return self._fallback_redpill_prompt()
 
     def generate_two_part_quote(self) -> Dict[str, str]:
-        """Generate a two-part quote: hook (4 sec) + payoff (remaining time).
+        """Generate a two-part quote: hook (3 sec) + payoff (remaining time).
 
         Perfect for reels where first 3 seconds must grab attention.
-        Returns dict with 'hook' (4 seconds) and 'payoff' (6-9 seconds).
+        Returns dict with 'hook' (3 seconds) and 'payoff' (6-10 seconds).
         """
         if not self.client:
             return self._fallback_two_part_quote()
@@ -206,7 +206,7 @@ HOOK STYLE REQUIREMENT: {hook_style}
 
 CRITICAL FOR STOPPING SCROLL:
 - HOOK must be a DIRECT STATEMENT or ACCUSATION, not a question
-- 3-8 words MAXIMUM (shorter = better for immediate impact)
+- 2-6 words MAXIMUM (MUST be readable in 3 seconds)
 - Examples of POWERFUL hooks:
   * "You'll die satisfying others"
   * "Comfort is killing you"
@@ -221,22 +221,22 @@ CRITICAL FOR STOPPING SCROLL:
 ORIGINALITY: Make it FRESH - avoid recycled quotes like "success is lonely", "most people are sheep", "discipline wins"
 
 Structure:
-1. HOOK (first 4.5 seconds): 
+1. HOOK (first 3 seconds): 
    - {hook_style}
-   - 3-8 words maximum
+   - 2-6 words maximum
    - Provocative/accusatory statement
    - Makes viewers pause and want to know more
 
-2. PAYOFF (last 8-9 seconds):
+2. PAYOFF (last 7-10 seconds):
    - Explains WHY or shows CONSEQUENCE in fewest words possible
-   - 3-6 words MAXIMUM (ultra-short, brutal, unforgettable)
+   - 3-8 words MAXIMUM (ultra-short, brutal, unforgettable)
    - One devastating truth or consequence
    - Must hit hard and be memorable
 
 Format your response EXACTLY as JSON (no markdown, no explanations):
 {{
-    "hook": "Your hook text here (3-8 words)",
-    "payoff": "Your payoff text here (3-6 words ONLY)"
+    "hook": "Your hook text here (2-6 words)",
+    "payoff": "Your payoff text here (3-8 words ONLY)"
 }}"""
 
             response = self.genai_client.models.generate_content(
@@ -302,7 +302,7 @@ Format your response EXACTLY as JSON (no markdown, no explanations):
     def suggest_video_style(self, theme: str, music_vibe: str) -> str:
         """Suggest appropriate video background style."""
         suggestions = {
-            "aggressive_bass_heavy": ["sports_car_footage", "urban_night_drive", "gym_motivation"],
+            "aggressive_bass_heavy": ["sports_car_footage", "urban_night_drive", "gym_motivation", "predator_hunting"],
             "dark_atmospheric": ["city_lights", "rain_aesthetic", "urban_night_drive"],
             "ambient_phonk": ["nature_solitude", "abstract_geometric", "rain_aesthetic"],
             "minimal_phonk": ["nature_solitude", "city_lights", "abstract_geometric"]
@@ -354,7 +354,7 @@ Generate a JSON response with:
 4. "music_vibe": Phonk music style description
 5. "video_style": Background video description
 6. "hashtags": Array of MAXIMUM 3 relevant hashtags
-7. "music_search_terms": Array of 3-5 search terms to find the perfect phonk music (e.g., ["aggressive phonk", "drift phonk bass boosted", "brazilian phonk 808"])
+7. "music_search_terms": Array of 3-5 search terms to find the perfect phonk music (e.g., ["brazilian phonk dance mixed", "troll phonk bass boosted 808", "hardstyle gym remix", "distorted drift phonk", "aggressive techno phonk"])
 8. "video_search_terms": Array of 3-5 STRIKING search terms - MUST include animals, nature power, or extreme action. NO generic city/dark themes. Use: lions, tigers, eagles, sharks, storms, fire, volcanoes, explosions, racing, fighting. Examples: ["lion hunting predator 4k", "tiger roaring intense wild", "eagle diving attack", "storm lightning power", "motorcycle racing speed", "boxer fighting intense"]
 9. "video_description": Detailed visual description for video editor (e.g., "Close-up of lion's eyes, slow-motion, then cut to tiger roaring, dramatic lighting, fire in background"). This helps create custom visuals.
 
@@ -364,10 +364,10 @@ Requirements:
 - Focus on hard truths that aren't overused
 - Avoid generic "sigma mindset" buzzwords
 - No cringe or corporate speak
-- Music search terms should be DIVERSE and specific (mix of genres, moods, styles - not just phonk)
-  * Include varied genres: phonk, trap, lofi, hip hop, instrumental, electronic, etc.
-  * Different moods: aggressive, calm, inspirational, dark, uplifting
-  * Real searchable terms that will return different results each time
+- Music search terms should be EXCITING and HIGH-ENERGY:
+  * Focus on: Brazilian Phonk, Hardstyle, Gym Phonk, Techno, Distorted Bass
+  * Avoid: Low energy "lofi" or "chill" beats unless theme forces it
+  * Examples: "brazilian phonk montage", "hardstyle zyzz", "sigma grindset music"
 - Video search terms should be DIVERSE and specific, searchable on YouTube/stock sites
   * Vary the aesthetic: urban, nature, luxury, minimal, action, abstract, etc.
   * Different locations and scenes
@@ -500,64 +500,64 @@ Output ONLY valid JSON, no explanations:"""
         """Fallback two-part quotes when API is unavailable."""
         two_part_quotes = [
             {
-                "hook": "They don't want you to know this because...",
-                "payoff": "...once you understand it, you can't be controlled. Real power comes from seeing the world as it is, not as they want you to see it."
+                "hook": "They don't want you...",
+                "payoff": "...to know real power comes from seeing the world as it is."
             },
             {
-                "hook": "Everyone thinks success requires luck, but the truth is...",
-                "payoff": "...luck is just preparation meeting opportunity. While 99% wait for the perfect moment, the 1% create their own reality through relentless action."
+                "hook": "Success isn't luck...",
+                "payoff": "...it's preparation meeting opportunity. Create your own reality."
             },
             {
-                "hook": "Your biggest competition isn't the guy next to you...",
-                "payoff": "...it's the guy you were yesterday. The only race that matters is becoming your highest self. Everything else is just noise."
+                "hook": "Your biggest enemy...",
+                "payoff": "...is the person you were yesterday. Be better."
             },
             {
-                "hook": "They say money doesn't matter, but deep down they know...",
-                "payoff": "...freedom is built on a foundation of financial independence. Without it, you're just another worker bee in someone else's hive."
+                "hook": "Money buys freedom...",
+                "payoff": "...don't let anyone tell you it doesn't matter."
             },
             {
-                "hook": "Most people will never understand what separates winners from losers...",
-                "payoff": "...it's not talent, it's the willingness to do what others won't when others are sleeping. Consistency over intensity, always."
+                "hook": "Winners do this...",
+                "payoff": "...what losers refuse to do. Discipline over motivation."
             },
             {
-                "hook": "The system isn't broken, it's working exactly as designed...",
-                "payoff": "...to keep you dependent and obedient. Real freedom requires you to break the mold and build your own path."
+                "hook": "The system is rigged...",
+                "payoff": "...to keep you poor. Break the mold."
             },
             {
-                "hook": "Your comfort zone is slowly killing your potential because...",
-                "payoff": "...growth only happens at the edge of what scares you. The more uncomfortable the journey, the more valuable the destination."
+                "hook": "Comfort kills you...",
+                "payoff": "...growth only happens when you're in pain."
             },
             {
-                "hook": "Everyone has the same 24 hours but only the elite use them differently...",
-                "payoff": "...they don't waste time on distractions. They're obsessed with progress, addicted to improvement, and allergic to mediocrity."
+                "hook": "You have time...",
+                "payoff": "...you just waste it. Be obsessed with progress."
             },
             {
-                "hook": "You think you're not ready, but reality is...",
-                "payoff": "...readiness is a myth. The people who win started before they felt ready. Confidence comes from action, not preparation."
+                "hook": "You're not ready...",
+                "payoff": "...and you never will be. Start anyway."
             },
             {
-                "hook": "Most people sabotage themselves without knowing it because...",
-                "payoff": "...mediocrity is comfortable. The pain of growth scares them more than the pain of regret. You have to choose which pain you'll accept."
+                "hook": "Self-sabotage is...",
+                "payoff": "...choosing comfort over growth. Choose pain."
             },
             {
-                "hook": "Social media shows you everyone's best life but hides...",
-                "payoff": "...the struggles that made them. Don't compare your reality to someone else's highlight reel. Your only competition is yesterday's version of you."
+                "hook": "Social media lies...",
+                "payoff": "...don't compare your life to their highlights."
             },
             {
-                "hook": "People say follow your passion, but that's incomplete advice because...",
-                "payoff": "...passion without discipline is just a hobby. Real wealth comes from doing what's valuable, not just what feels good."
+                "hook": "Passion is fake...",
+                "payoff": "...discipline is real. Do what is valuable."
             },
             {
-                "hook": "Your biggest fear isn't failure, it's actually...",
-                "payoff": "...success. Because success demands you become someone new. Most people choose the familiar pain over the uncomfortable transformation."
+                "hook": "You fear success...",
+                "payoff": "...because it requires you to change."
             },
             {
-                "hook": "Education doesn't cost money, ignorance does, because...",
-                "payoff": "...every wrong decision based on lack of knowledge costs you time and opportunity. Your greatest investment is in understanding how things actually work."
+                "hook": "Ignorance is expensive...",
+                "payoff": "...invest in your mind or pay the price."
             },
             {
-                "hook": "You're waiting for permission that will never come because...",
-                "payoff": "...no one is going to hand you success. The people who matter are too busy building their own empires to care about stopping you."
+                "hook": "Stop waiting...",
+                "payoff": "...no one is coming to save you."
             }
         ]
         return random.choice(two_part_quotes)
@@ -611,40 +611,40 @@ Output ONLY valid JSON, no explanations:"""
         # IMPORTANT: Music searches emphasize hard-hitting beats, no soft intros
         music_searches = {
             "redpill_reality": [
-                "aggressive phonk hard drop", "drift phonk bass boosted", "brazilian phonk intense",
-                "hard trap beats fast", "dark trap instrumental aggressive", "boom bap hip hop heavy"
+                "brazilian phonk intense dance", "troll phonk 808 cowbell", "aggressive drift phonk bass",
+                "hardstyle gym remix zyzz", "dark techno aggressive", "distorted phonk montage"
             ],
             "sigma_mindset": [
-                "dark phonk hard beat", "memphis phonk fast tempo", "sigma phonk aggressive",
-                "underground trap drop heavy", "chicago footwork quick tempo", "hard bass trap"
+                "magna phonk slow reverb", "memphis doomshop phonk", "sigma grindset music hard",
+                "sahara phonk remix", "kordhell style phonk", "rave phonk high energy"
             ],
             "stoic_philosophy": [
-                "powerful orchestral music", "dramatic music intense", "epic soundtrack",
-                "building music powerful", "heroic soundtrack", "orchestral powerful"
+                "slowed reverb phonk atmospheric", "wave phonk hard", "dramatic cinematic bass",
+                "epic orchestral trap remix", "hans zimmer style bass boosted", "dark ambient intense"
             ],
             "monk_mode": [
-                "focused instrumental intense", "deep meditation music", "dark ambient focus",
-                "minimal electronic beats", "hyperfocus music", "concentration soundtrack"
+                "focused dark techno", "deep house focus mix", "minimal techno driving",
+                "cyberpunk midtempo bass", "dark synthwave aggressive", "night drive phonk"
             ],
             "financial_freedom": [
-                "powerful motivational music", "inspiring upbeat music", "success anthem beat",
-                "triumph instrumental", "winning music motivational", "victory soundtrack"
+                "luxury lifestyle beat trap", "wolf of wall street phonk", "billionaire mindset music",
+                "success motivation epic beat", "winning anthem hardstyle", "victory lap trap beat"
             ],
             "self_improvement": [
-                "motivational uplifting music", "intensity workout beat", "powerful instrumental",
-                "epic rise music", "motivational beat fast", "energy surge soundtrack"
+                "zyzz hardstyle motivation", "tevvez legend style", "gym workout intense phonk",
+                "david goggins style music", "can't be touched remix", "energy surge hard bass"
             ],
             "brutal_truth": [
-                "hard aggressive music", "intense dark beat", "heavy bass intense",
-                "aggressive instrumental music", "raw hard beat", "street music hard"
+                "dark horror phonk", "scary garry style phonk", "murder in my mind vibes",
+                "doomsday aggressive phonk", "distorted bass warning", "siren head phonk"
             ],
             "high_value_mindset": [
-                "luxury beat smooth", "premium music instrumental", "classy upbeat music",
-                "sophisticated powerful music", "smooth trap beat", "elite soundtrack"
+                "metamorphosis phonk", "clean luxury trap beat", "gentlemen style phonk",
+                "james bond style trap remix", "matrix theme remix bass", "top g music theme"
             ],
             "sigma_gaming": [
-                "aggressive phonk beat dark hard", "drift phonk racing music intense", "dark trap beat maximum",
-                "sigma grindset phonk hard", "competitive gaming soundtrack intense", "motivational trap beat aggressive"
+                "doom eternal metal remix", "cyberpunk combat music", "boss battle electronic intense",
+                "high octane racing music", "fps gaming montage music", "dubstep hard drop 2024"
             ]
         }
 

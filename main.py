@@ -69,7 +69,7 @@ async def generate_content(count: int):
     setup_database()
 
     orchestrator = BotOrchestrator()
-    await orchestrator.start()
+    await orchestrator.start(blocking=False)
     results = await orchestrator.generate_content(count=count)
 
     print(f"\n✅ Generated {len(results)} reels:")

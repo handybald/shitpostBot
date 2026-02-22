@@ -60,8 +60,13 @@ class BotOrchestrator:
 
         logger.info("Orchestrator initialized")
 
-    async def start(self) -> None:
-        """Start all background jobs and services."""
+    async def start(self, blocking: bool = True) -> None:
+        """
+        Start all background jobs and services.
+        
+        Args:
+            blocking: If True, blocks until stopped. If False, returns after initialization.
+        """
         logger.info("Starting orchestrator...")
         self.running = True
 
@@ -84,6 +89,12 @@ class BotOrchestrator:
         # Start scheduler in background thread
         self.scheduler.start()
         logger.info("Orchestrator started - background jobs scheduled")
+
+        if not blocking:
+            if self.telegram_bot:
+                logger.info("Starting Telegram bot polling in background...")
+                asyncio.create_task(self.telegram_bot.start_polling())
+            return
 
         # Start Telegram bot polling concurrently
         if self.telegram_bot:
@@ -157,30 +168,26 @@ class BotOrchestrator:
             misfire_grace_time=60
         )
 
-        # Schedule posts at configured times
-        post_times = self.config.get("scheduling.post_times", [])
-        for post_time in post_times:
-            day = post_time.get("day", 1)  # 0-6 (Mon-Sun)
-            time_str = post_time.get("time", "18:00")
-            hour, minute = map(int, time_str.split(":"))
-
-            # Convert day number: 0=Mon, 6=Sun
-            days_map = {0: "mon", 1: "tue", 2: "wed", 3: "thu", 4: "fri", 5: "sat", 6: "sun"}
-            cron_day = days_map.get(day, "fri")
-
-            self.scheduler.add_job(
-                self.publish_scheduled_job,
-                CronTrigger(day_of_week=cron_day, hour=hour, minute=minute),
-                id=f"publish_{day}_{time_str}",
-                name=f"Publish {cron_day} at {time_str}",
-                misfire_grace_time=300
-            )
-
+        # Check for scheduled posts frequently (every 2 minutes)
+        # This replaces the specific CronTimes to ensure we catch any dynamically scheduled/rescheduled posts
+        self.scheduler.add_job(
+            self.publish_scheduled_job,
+            IntervalTrigger(seconds=120),  # Check every 2 mins
+            id="publish_scheduled_check",
+            name="Check scheduled posts",
+            misfire_grace_time=60
+        )
+        
         logger.info(f"Scheduled {len(self.scheduler.get_jobs())} background jobs")
 
     async def generate_content_job(self) -> None:
         """Background job: Generate content if queue is low."""
         try:
+            # Check if auto-generation is enabled (default to False to prevent unwanted generation)
+            if not self.config.get("automation.auto_generate", False):
+                logger.debug("Auto-generation disabled - skipping")
+                return
+
             logger.debug("Running generate_content_job")
 
             reel_repo = GeneratedReelRepository(self.session)
@@ -263,10 +270,11 @@ class BotOrchestrator:
             # Get scheduled posts that are ready (using UTC for DB comparison)
             now_utc = datetime.utcnow()
             logger.debug(f"Checking for scheduled posts. Current UTC time: {now_utc}")
-
-            scheduled = sched_repo.session.query(ScheduledPostRepository.model).filter(
-                ScheduledPostRepository.model.scheduled_time <= now_utc,
-                ScheduledPostRepository.model.status == "scheduled"
+            
+            from src.database.models import ScheduledPost
+            scheduled = sched_repo.session.query(ScheduledPost).filter(
+                ScheduledPost.scheduled_time <= now_utc,
+                ScheduledPost.status.in_(["scheduled", "pending"]) # Check both just in case
             ).all()
 
             logger.debug(f"Found {len(scheduled)} scheduled posts ready to publish")
@@ -325,6 +333,7 @@ class BotOrchestrator:
 
                     # Check/add video
                     video_filename = downloaded_content["video_path"].name
+                    video_meta = downloaded_content.get("video_data", {})
                     video_obj = self.session.query(Video).filter_by(filename=video_filename).first()
                     if not video_obj:
                         video_obj = Video(
@@ -333,7 +342,8 @@ class BotOrchestrator:
                             resolution="1080x1920",
                             tags=",".join(content_idea.video_search_terms),
                             theme=ai_theme,
-                            source="youtube_auto"
+                            source=video_meta.get("source", "youtube_auto"),
+                            url=video_meta.get("url")
                         )
                         self.session.add(video_obj)
                         self.session.flush()
@@ -416,13 +426,12 @@ class BotOrchestrator:
                 )
 
                 # Check quality
-                is_ok = self.quality_checker.is_acceptable(
-                    result["output_path"],
-                    min_quality_score=self.config.get("content.generation.quality_threshold", 0.75)
-                )
+                quality_result = self.quality_checker.check_integrity(result["output_path"])
+                quality_score = quality_result["quality_score"]
+                is_ok = quality_score >= self.config.get("content.generation.quality_threshold", 0.75)
 
                 if not is_ok:
-                    logger.warning(f"Generated video failed quality check")
+                    logger.warning(f"Generated video failed quality check (score: {quality_score:.2f})")
                     continue
 
                 # Save to database
@@ -435,7 +444,7 @@ class BotOrchestrator:
                     status="pending",
                     duration=result["duration"],
                     file_size=result["file_size"],
-                    quality_score=result.get("quality_score", 0.8)
+                    quality_score=quality_score
                 )
 
                 # Update usage counts for all content
@@ -511,9 +520,32 @@ class BotOrchestrator:
 
         for i in range(count):
             try:
-                # Generate AI-powered two-part quote
+                # Generate AI-powered two-part quote (with uniqueness check)
                 logger.info(f"[{i+1}/{count}] Generating AI-powered two-part quote...")
-                quote_data = self.gemini_generator.generate_two_part_quote()
+                
+                from src.database.models import Quote
+                quote_data = None
+                
+                # Retry up to 3 times to get a unique quote
+                for attempt in range(3):
+                    candidate_data = self.gemini_generator.generate_two_part_quote()
+                    hook = candidate_data.get("hook", "")
+                    payoff = candidate_data.get("payoff", "")
+                    full_text = f"{hook} {payoff}"
+                    
+                    # Check if this quote text already exists in DB
+                    existing_quote = self.session.query(Quote).filter(Quote.text == full_text).first()
+                    
+                    if not existing_quote:
+                        quote_data = candidate_data
+                        break
+                    else:
+                        logger.warning(f"Generated duplicate quote, retrying... ({full_text[:30]}...)")
+                
+                if not quote_data:
+                    logger.warning(f"Could not generate unique quote after 3 attempts, using last one")
+                    quote_data = candidate_data
+
                 hook = quote_data.get("hook", "")
                 payoff = quote_data.get("payoff", "")
                 
@@ -527,12 +559,32 @@ class BotOrchestrator:
                     style="redpill_motivational"
                 )
 
-                # Create caption from payoff
-                caption = payoff[:150]
+                # Generate engaging caption for the two-part quote
+                logger.info(f"[{i+1}/{count}] Generating caption for two-part quote...")
+                full_quote = f"{hook} {payoff}"
+                caption = self.llm.generate(
+                    quote=full_quote,
+                    theme=content_idea.theme or theme or "motivation",
+                    music_energy="high"
+                )
 
-                # Download video and music
+                # Download video and music (with uniqueness check)
                 logger.info(f"[{i+1}/{count}] Downloading video and music...")
-                downloaded_content = self.content_downloader.download_content_for_idea(content_idea)
+                
+                # Fetch existing video URLs to ensure uniqueness
+                from src.database.models import Video
+                existing_urls = set()
+                try:
+                    # Get all non-null URLs from video table
+                    urls = self.session.query(Video.url).filter(Video.url.isnot(None)).all()
+                    existing_urls = {u[0] for u in urls if u[0]}
+                except Exception as e:
+                    logger.warning(f"Failed to fetch existing video URLs: {e}")
+                
+                downloaded_content = self.content_downloader.download_content_for_idea(
+                    content_idea,
+                    excluded_urls=existing_urls
+                )
 
                 if not downloaded_content["video_path"] or not downloaded_content["music_path"]:
                     logger.error(f"[{i+1}/{count}] Failed to download required content")
@@ -543,6 +595,7 @@ class BotOrchestrator:
 
                 # Check/add video
                 video_filename = downloaded_content["video_path"].name
+                video_meta = downloaded_content.get("video_data", {})
                 video_obj = self.session.query(Video).filter_by(filename=video_filename).first()
                 if not video_obj:
                     video_obj = Video(
@@ -551,7 +604,8 @@ class BotOrchestrator:
                         resolution="1080x1920",
                         tags=",".join(content_idea.video_search_terms),
                         theme=content_idea.theme,
-                        source="youtube_auto"
+                        source=video_meta.get("source", "youtube_auto"),
+                        url=video_meta.get("url")
                     )
                     self.session.add(video_obj)
                     self.session.flush()
@@ -585,13 +639,12 @@ class BotOrchestrator:
                 )
 
                 # Check quality
-                is_ok = self.quality_checker.is_acceptable(
-                    result["output_path"],
-                    min_quality_score=self.config.get("content.generation.quality_threshold", 0.75)
-                )
+                quality_result = self.quality_checker.check_integrity(result["output_path"])
+                quality_score = quality_result["quality_score"]
+                is_ok = quality_score >= self.config.get("content.generation.quality_threshold", 0.75)
 
                 if not is_ok:
-                    logger.warning(f"Generated video failed quality check")
+                    logger.warning(f"Generated video failed quality check (score: {quality_score:.2f})")
                     continue
 
                 # Create Quote record with merged hook+payoff text
@@ -621,7 +674,7 @@ class BotOrchestrator:
                     caption=caption,
                     duration=result["duration"],
                     file_size=result["file_size"],
-                    quality_score=result.get("quality_score", 0.8)
+                    quality_score=quality_score
                 )
 
                 # Update usage counts for all content
@@ -721,6 +774,7 @@ class BotOrchestrator:
         try:
             reel_repo = GeneratedReelRepository(session)
             pub_repo = PublishedPostRepository(session)
+            sched_repo = ScheduledPostRepository(session)
             
             reel = reel_repo.get_by_id(reel_id)
 
@@ -737,6 +791,11 @@ class BotOrchestrator:
                         f"⚠️ Reel #{reel_id} was already published\nMedia ID: {existing_pub.instagram_media_id}",
                         level="info"
                     )
+                
+                # Ensure scheduled post is marked as published to stop the loop
+                sched_post = sched_repo.get_by_reel_id(reel_id)
+                if sched_post:
+                    sched_repo.update_status(sched_post.id, "published")
                 return
 
             logger.info(f"Publishing reel #{reel_id} to Instagram via Graph API...")
@@ -799,6 +858,11 @@ class BotOrchestrator:
             
             # Update reel status
             reel_repo.update_status(reel_id, "published")
+
+            # Update scheduled post status
+            sched_post = sched_repo.get_by_reel_id(reel_id)
+            if sched_post:
+                sched_repo.update_status(sched_post.id, "published")
 
             if self.telegram_bot:
                 await self.telegram_bot.send_notification(

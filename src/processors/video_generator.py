@@ -191,8 +191,13 @@ class VideoGenerator:
         hook_fontsize = 95 if len(hook_lines) <= 2 else 85 if len(hook_lines) <= 3 else 75
         payoff_fontsize = 85 if len(payoff_lines) <= 3 else 75 if len(payoff_lines) <= 4 else 65
 
-        # Generate random white-ish colors for hook (changes each reel)
-        hook_color = self._generate_random_white_color()
+        # Use high-contrast colors for maximum readability
+        # Hook: White text with thick black border
+        hook_color = "&H00FFFFFF"
+        
+        # Payoff: Gold/Yellow text with thick black border (Classic viral style)
+        # BGR format: 00 (Blue), D7 (Green), FF (Red) -> Gold/Yellow
+        payoff_color = "&H0000D7FF"
 
         ass_content = f"""[Script Info]
         Title: Two-Part Quote
@@ -204,13 +209,13 @@ class VideoGenerator:
 
         [V4+ Styles]
         Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-        Style: Hook,Impact,{hook_fontsize},{hook_color},&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,5,3,2,60,60,150,1
-        Style: Payoff,Impact,{payoff_fontsize},&H00FFFFFF,&H000000FF,&H00FF6600,&H64000000,-1,0,0,0,100,100,0,0,1,5,4,2,60,60,250,1
+        Style: Hook,Impact,{hook_fontsize},{hook_color},&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,6,0,2,60,60,150,1
+        Style: Payoff,Impact,{payoff_fontsize},{payoff_color},&H000000FF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,6,0,2,60,60,250,1
 
         [Events]
         Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-        Dialogue: 0,0:00:0.00,0:00:4.50,Hook,,0,0,0,,{{\\q2\\fad(100,200)\\t(0,1500,\\fscx105\\fscy105)\\t(3000,4500,\\fscx100\\fscy100)}}{hook_wrapped}
-        Dialogue: 1,0:00:4.50,0:00:13.00,Payoff,,0,0,0,,{{\\q2\\bord4\\shad5\\fad(200,400)\\t(0,600,\\fscx110\\fscy110)\\t(3500,5500,\\fscx100\\fscy100)}}{payoff_wrapped}
+        Dialogue: 0,0:00:0.00,0:00:3.00,Hook,,0,0,0,,{{\\q2\\fad(100,200)\\shad5\\t(0,1000,\\fscx105\\fscy105)\\t(2000,3000,\\fscx100\\fscy100)}}{hook_wrapped}
+        Dialogue: 1,0:00:3.00,0:00:13.00,Payoff,,0,0,0,,{{\\q2\\bord6\\shad5\\fad(200,400)\\t(0,600,\\fscx110\\fscy110)\\t(3500,5500,\\fscx100\\fscy100)}}{payoff_wrapped}
         """
         ass_path.write_text(ass_content, encoding="utf-8")
     def _ffmpeg_filter_escape(self, s: str) -> str:
