@@ -43,6 +43,7 @@ def check_env_file():
         "AWS_SECRET_ACCESS_KEY": "AWS Secret Access Key",
         "S3_BUCKET_NAME": "S3 Bucket Name",
         "AWS_REGION": "AWS Region",
+        "PEXELS_API_KEY": "Pexels API Key",
     }
 
     print("\n📋 Credentials Status:\n")
@@ -149,7 +150,14 @@ def show_credentials_guide():
      S3_BUCKET_NAME=your_bucket_name
      AWS_REGION=us-east-1
 
-5️⃣  Your Telegram User ID
+5️⃣  PEXELS_API_KEY (Optional but Recommended)
+   - Go to https://www.pexels.com/api/
+   - Sign up for a free account and request an API key
+   - Copy the key (looks like a long alphanumeric string)
+   - Add to .env: PEXELS_API_KEY=your_key_here
+   - Used to source free, royalty-free stock videos for posts
+
+6️⃣  Your Telegram User ID
    - Open Telegram and search @userinfobot
    - Send /start
    - It will show your User ID

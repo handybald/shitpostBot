@@ -98,6 +98,7 @@ def check_env_vars():
         "AWS_SECRET_ACCESS_KEY",
         "S3_BUCKET_NAME",
         "AWS_REGION",
+        "PEXELS_API_KEY",
     ]
 
     missing_required = []
