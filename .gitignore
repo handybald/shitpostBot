@@ -23,16 +23,16 @@ __pycache__/
 *$py.class
 *.so
 .Python
-build/
+/build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
-sdist/
+/sdist/
 var/
 wheels/
 pip-wheel-metadata/
@@ -44,6 +44,8 @@ MANIFEST
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
@@ -82,3 +84,8 @@ htmlcov/
 *.cache
 
 *.jsonl
+
+# Renderer (Node/Remotion)
+renderer/node_modules/
+renderer/out/
+renderer/.remotion/

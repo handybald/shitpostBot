@@ -28,10 +28,42 @@ class Video(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_used_at = Column(DateTime)
 
+    # Footage QC decision tree (see src/processors/footage_qc.py)
+    qc_status = Column(String(20), default="pending")  # pending, accepted, rejected
+    qc_composite_score = Column(Float)  # 0-1, weighted soft score
+    qc_scores = Column(Text)  # JSON blob of individual criterion scores
+    qc_reason = Column(String(255))  # human-readable accept/reject reason
+    qc_checked_at = Column(DateTime)
+    phash = Column(String(64))  # perceptual hash of a representative frame, for dedup
+
     generated_reels = relationship("GeneratedReel", back_populates="video")
 
     def __repr__(self):
         return f"<Video {self.filename}>"
+
+
+class FootageQCLog(Base):
+    """
+    Audit trail of every footage candidate that went through the QC decision
+    tree, accepted or rejected. Kept separate from Video so rejected
+    candidates (which are deleted from disk) still leave a record for
+    threshold tuning and debugging "why is nothing passing" issues.
+    """
+    __tablename__ = "footage_qc_log"
+
+    id = Column(Integer, primary_key=True)
+    filename = Column(String(255))
+    source = Column(String(50))
+    theme = Column(String(100))
+    decision = Column(String(20))  # accepted, rejected
+    reason = Column(String(255))
+    composite_score = Column(Float)
+    scores = Column(Text)  # JSON blob
+    shadow_mode = Column(Boolean, default=False)  # logged only, not enforced
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<FootageQCLog {self.filename} {self.decision}>"
 
 
 class Music(Base):

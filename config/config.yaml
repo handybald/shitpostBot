@@ -23,27 +23,44 @@ aws:
   s3_bucket_name: ${S3_BUCKET_NAME}
   region: ${AWS_REGION:us-east-1}
 
+tts:
+  # ElevenLabs voiceover - drives reel duration (see src/services/tts_provider.py)
+  voice_id: ${ELEVENLABS_VOICE_ID}
+  model_id: "eleven_multilingual_v2"
+  output_dir: "data/output/voiceover"
+
 video:
+  # Rendered via renderer/ (Remotion) - see src/processors/video_generator.py
   output_dir: "data/output"
   font_name: "Impact"
-  # Visual effects parameters
-  dizzy_rot_amp: 0.008
-  dizzy_drift_amp: 8
-  dizzy_crop_pad: 80
-  contrast: 1.20
+  accent_color: "#FFD700"
+  base_color: "#FFFFFF"
+  contrast: 1.15
   brightness: 0.00
-  vignette_angle: "PI/4"
+  music_volume: 0.22  # linear 0-1, ducked under the voiceover
+  max_words_per_line: 4
 
-audio:
-  # Audio processing chain parameters
-  bass_boost_db: 7
-  bass_freq: 90
-  comp_threshold: -16
-  comp_ratio: 6.0
-  comp_attack: 5
-  comp_release: 80
-  limiter: -0.3
-  target_lufs: -14
+footage_qc:
+  # Decision tree thresholds - see src/processors/footage_qc.py
+  # Only watermark/nsfw/technical/dedup are hard rejects; relevance/aesthetic/
+  # crop_fit/motion are soft-scored so an overly strict batch can't zero out
+  # the whole pool. Set shadow_mode: true to log decisions without enforcing
+  # the soft ones, to calibrate these thresholds against real data first.
+  shadow_mode: false
+  min_short_side_px: 1080
+  min_duration_seconds: 3.0
+  min_fps: 24.0
+  min_relevance_score: 6.0
+  min_aesthetic_score: 5.0
+  min_crop_fit_score: 5.0
+  nsfw_risk_reject_at: 5.0
+  min_static_motion_score: 0.02
+  dedup_max_hamming_distance: 6
+  composite_accept_threshold: 0.55
+  pool_floor_per_theme: 5  # alert (Telegram) if a theme's accepted pool drops below this
+  vision_model: "gemini-2.5-flash"
+  video_over_fetch_count: 10  # candidates downloaded per generation, before QC picks the best
+  music_over_fetch_count: 5
 
 content:
   generation:
@@ -128,22 +145,6 @@ automation:
   metrics_interval: 10800   # 3 hours (seconds)
   queue_check_interval: 3600  # 1 hour (seconds)
   calendar_check_interval: 300  # 5 minutes (seconds)
-
-video_processing:
-  output_resolution: "1080x1920"
-  frame_rate: 30
-  codec: "libx264"
-  quality: 18  # CRF value (lower = better, 0-51)
-  ffmpeg_preset: "medium"
-
-audio_processing:
-  bass_boost_db: 7
-  bass_freq: 90
-  compressor_threshold: -16
-  compressor_ratio: 6.0
-  target_lufs: -14
-  audio_codec: "aac"
-  audio_bitrate: "192k"
 
 storage:
   s3_enabled: true

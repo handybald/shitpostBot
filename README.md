@@ -14,10 +14,16 @@ Transform your Instagram strategy with AI-powered content generation, smart sche
 - ✅ **Repository Pattern** - Clean data access layer
 - ✅ **Data Migration** - Import legacy ledger.jsonl and uploaded.jsonl
 
-### Phase 3: Coming Soon
-- 🔄 **Video Generation** - Refactored video composition with FFmpeg
-- 🔄 **AI Captions** - OpenAI/Anthropic caption generation
-- 🔄 **S3 Storage** - Cloud hosting with presigned URLs
+### Phase 3: Video Pipeline (✅ Rewritten)
+- ✅ **Remotion-based rendering** (`renderer/`) - replaces the old raw-ffmpeg
+  filter-graph composition; see `renderer/README.md`
+- ✅ **ElevenLabs voiceover** - drives reel duration from real word-level
+  timestamps instead of a fixed 13s
+- ✅ **Footage QC decision tree** (`src/processors/footage_qc.py`) - every
+  downloaded clip is scored (relevance/aesthetic/crop-fit/safety) before use
+- ✅ **AI beat-sheet scripts** (`src/services/gemini_content_generator.py`) -
+  hook/body/payoff generation, replacing the flat single-quote prompt
+- 🔜 **S3 Storage** - Cloud hosting with presigned URLs
 
 ### Phase 4: Coming Soon
 - 🔜 **Telegram Bot** - `/generate`, `/approve`, `/analytics` commands

@@ -48,6 +48,44 @@ class ContentSuggestion:
         }
 
 
+@dataclass
+class BeatSheet:
+    """
+    A structured script for the voiceover pipeline, replacing the old flat
+    single-quote prompt. `full_voiceover_text` is what gets sent to TTS -
+    duration is whatever that ends up being once spoken, not a fixed 13s.
+    hook/body/payoff are kept separately only so the renderer can style them
+    differently (e.g. a punchier hook color) if desired.
+    """
+    hook: str
+    body: str
+    payoff: str
+    caption: str
+    theme: str
+    music_mood: str
+    video_search_terms: List[str]
+    music_search_terms: List[str]
+    hashtags: List[str]
+
+    @property
+    def full_voiceover_text(self) -> str:
+        return " ".join(part.strip() for part in [self.hook, self.body, self.payoff] if part.strip())
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "hook": self.hook,
+            "body": self.body,
+            "payoff": self.payoff,
+            "full_voiceover_text": self.full_voiceover_text,
+            "caption": self.caption,
+            "theme": self.theme,
+            "music_mood": self.music_mood,
+            "video_search_terms": self.video_search_terms,
+            "music_search_terms": self.music_search_terms,
+            "hashtags": self.hashtags,
+        }
+
+
 class GeminiContentGenerator:
     """Generate high-quality content using Google Gemini AI."""
 
@@ -143,6 +181,133 @@ class GeminiContentGenerator:
         except Exception as e:
             logger.error(f"Gemini generation failed: {e}")
             return self._fallback_content_idea(theme, style)
+
+    def generate_beat_sheet(self, theme: Optional[str] = None) -> BeatSheet:
+        """
+        Generate a structured hook/body/payoff script meant to be *spoken*
+        by TTS, not burned onto screen as static ASS timing. This is what
+        drives duration in the new pipeline - there's no fixed reel length,
+        the render is exactly as long as this script takes to say.
+        """
+        if not self.client:
+            return self._fallback_beat_sheet(theme)
+
+        theme = theme or random.choice(self.CONTENT_THEMES)
+        music_vibe = self.suggest_phonk_music_vibe(theme)
+        video_style = self.suggest_video_style(theme, music_vibe["style"])
+
+        try:
+            prompt = f"""Write a spoken-word script for a short vertical video reel (theme: {theme}).
+
+This will be read aloud by a text-to-speech voice, NOT displayed as static
+text - so it must sound natural when spoken, with real sentence rhythm, not
+a choppy list of fragments.
+
+Structure (write as one flowing script, but return the three parts separately):
+1. HOOK (first ~2 seconds spoken, 3-8 words): a direct, provocative opening
+   line that stops someone mid-scroll. A statement or accusation, not a
+   question.
+2. BODY (~4-10 seconds spoken, 1-2 short sentences): develops the hook -
+   the reasoning or the specific example.
+3. PAYOFF (~2-4 seconds spoken, 3-10 words): the memorable, quotable
+   conclusion - what people would screenshot or repeat.
+
+Total spoken length should land naturally between 15-30 seconds when read
+aloud at a normal pace (roughly 45-90 words total across all three parts).
+
+Be ORIGINAL - avoid recycled generic motivational lines like "success is
+lonely" or "discipline over motivation". Make it specific and vivid.
+
+Respond with ONLY this JSON, no markdown, no explanation:
+{{
+    "hook": "...",
+    "body": "...",
+    "payoff": "...",
+    "caption": "Instagram caption for this post, max 150 chars, include 2-3 relevant hashtags",
+    "video_search_terms": ["term1", "term2", "term3"],
+    "music_search_terms": ["term1", "term2"],
+    "hashtags": ["#tag1", "#tag2", "#tag3"]
+}}"""
+
+            response = self.genai_client.models.generate_content(
+                model=self.model_name, contents=prompt
+            )
+            beat_sheet = self._parse_beat_sheet(response.text, theme, music_vibe, video_style)
+            logger.info(f"Generated beat sheet ({theme}): {beat_sheet.hook[:40]}...")
+            return beat_sheet
+
+        except Exception as e:
+            logger.error(f"Beat sheet generation failed: {e}")
+            return self._fallback_beat_sheet(theme)
+
+    def _parse_beat_sheet(
+        self, response_text: str, theme: str, music_vibe: Dict[str, Any], video_style: str
+    ) -> BeatSheet:
+        text = response_text.strip()
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse beat sheet JSON: {e}")
+            return self._fallback_beat_sheet(theme)
+
+        caption = self._sanitize_caption(data.get("caption", ""))
+        hashtags = data.get("hashtags", [])
+        if isinstance(hashtags, list) and len(hashtags) > 3:
+            hashtags = hashtags[:3]
+
+        return BeatSheet(
+            hook=data.get("hook", "").strip(),
+            body=data.get("body", "").strip(),
+            payoff=data.get("payoff", "").strip(),
+            caption=caption,
+            theme=theme,
+            music_mood=music_vibe["style"],
+            video_search_terms=data.get("video_search_terms") or [video_style.replace("_", " ")],
+            music_search_terms=data.get("music_search_terms") or music_vibe["example_keywords"],
+            hashtags=hashtags,
+        )
+
+    def _fallback_beat_sheet(self, theme: Optional[str] = None) -> BeatSheet:
+        """Used when Gemini is unavailable or returns something unparseable."""
+        theme = theme or random.choice(self.CONTENT_THEMES)
+        music_vibe = self.suggest_phonk_music_vibe(theme)
+        video_style = self.suggest_video_style(theme, music_vibe["style"])
+
+        fallback_scripts = [
+            {
+                "hook": "Nobody is coming to save you.",
+                "body": "The people you're waiting on are busy building their own lives.",
+                "payoff": "Get up and build it yourself.",
+            },
+            {
+                "hook": "Comfort is quietly killing your potential.",
+                "body": "Every day you choose the easy path, someone else chooses the hard one and passes you.",
+                "payoff": "Growth only lives outside your comfort zone.",
+            },
+            {
+                "hook": "Most people quit right before it gets good.",
+                "body": "The results you want are hiding behind the exact discomfort you're avoiding right now.",
+                "payoff": "One more rep. One more day. That's the whole game.",
+            },
+        ]
+        script = random.choice(fallback_scripts)
+
+        return BeatSheet(
+            hook=script["hook"],
+            body=script["body"],
+            payoff=script["payoff"],
+            caption=f"{script['payoff']} #{theme.replace('_', '')} #motivation",
+            theme=theme,
+            music_mood=music_vibe["style"],
+            video_search_terms=[video_style.replace("_", " ")],
+            music_search_terms=music_vibe["example_keywords"],
+            hashtags=[f"#{theme.replace('_', '')}", "#motivation", "#mindset"],
+        )
 
     def generate_redpill_prompt(self) -> str:
         """Generate a powerful redpill/truth bomb prompt."""

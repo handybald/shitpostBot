@@ -19,6 +19,11 @@ PyYAML>=6.0
 # LLM & AI
 openai>=1.3.0
 anthropic>=0.7.0
+google-genai>=0.3.0
+
+# Footage QC (frame extraction, perceptual-hash dedup)
+Pillow>=10.2.0
+imagehash>=4.3.1
 
 # Utilities
 click>=8.1.7

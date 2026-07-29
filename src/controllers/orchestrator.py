@@ -10,6 +10,7 @@ Handles:
 """
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -23,16 +24,17 @@ from src.utils.logger import get_logger
 from src.utils.config_loader import get_config_instance
 from src.utils import datetime_helpers
 from src.database import get_session
-from src.database.models import PublishedPost
+from src.database.models import PublishedPost, Video, Music, Quote
 from src.database.repositories import (
     GeneratedReelRepository, ScheduledPostRepository,
     PublishedPostRepository,
     ContentCalendarRepository, JobRepository, ScheduleConfigRepository
 )
-from src.processors import ContentSelector, VideoGenerator, QualityChecker
-from src.services import InstagramService, LLMProvider
-from src.services.gemini_content_generator import GeminiContentGenerator
+from src.processors import VideoGenerator, QualityChecker, FootageQC
+from src.services import InstagramService
+from src.services.gemini_content_generator import GeminiContentGenerator, BeatSheet
 from src.services.content_downloader import ContentDownloader
+from src.services.tts_provider import ElevenLabsTTSProvider, TTSProviderError
 
 logger = get_logger(__name__)
 
@@ -72,16 +74,13 @@ class BotOrchestrator:
 
         # Initialize services
         self.session = get_session()
-        self.content_selector = ContentSelector(
-            self.session,
-            self.config.get("content")
-        )
         self.video_generator = VideoGenerator.from_config()
         self.quality_checker = QualityChecker()
+        self.footage_qc = FootageQC.from_config()
         self.instagram = InstagramService.from_config()
-        self.llm = LLMProvider.from_config()
         self.gemini_generator = GeminiContentGenerator()
         self.content_downloader = ContentDownloader()
+        self.tts_provider = ElevenLabsTTSProvider.from_config()
 
         # Schedule background jobs
         self._schedule_jobs()
@@ -288,11 +287,14 @@ class BotOrchestrator:
 
     async def generate_content(self, count: int = 1, theme: Optional[str] = None) -> List[Dict]:
         """
-        Generate N content reels.
+        Generate N reels: beat-sheet script -> ElevenLabs voiceover (this is
+        what drives duration - no fixed reel length) -> footage candidates
+        run through the QC decision tree -> music -> Remotion render ->
+        quality check -> DB save.
 
         Args:
             count: Number of reels to generate
-            theme: Optional theme (motivation, philosophy, hustle)
+            theme: Optional theme (see config.yaml `content.themes`)
 
         Returns:
             List of generated reel metadata
@@ -304,125 +306,52 @@ class BotOrchestrator:
 
         for i in range(count):
             try:
-                # Generate AI-powered content idea first (if available)
-                use_ai_prompt = self.gemini_generator.client is not None
+                beat_sheet = self.gemini_generator.generate_beat_sheet(theme=theme)
+                logger.info(f"[{i+1}/{count}] Hook: {beat_sheet.hook[:50]}...")
 
-                if use_ai_prompt:
-                    logger.info(f"[{i+1}/{count}] Generating AI-powered content idea...")
-                    content_idea = self.gemini_generator.generate_content_idea(
-                        theme=theme,
-                        style="redpill_motivational"
+                try:
+                    voiceover = self.tts_provider.generate(beat_sheet.full_voiceover_text)
+                except TTSProviderError as e:
+                    logger.error(f"[{i+1}/{count}] Voiceover generation failed: {e}")
+                    continue
+
+                video_objs = await self._select_qc_approved_videos(
+                    beat_sheet, target_duration=voiceover.duration, i=i, count=count
+                )
+                if not video_objs:
+                    logger.warning(
+                        f"[{i+1}/{count}] No footage passed QC for theme '{beat_sheet.theme}' - skipping"
                     )
-                    logger.info(f"[{i+1}/{count}] AI prompt: {content_idea.prompt[:60]}...")
+                    continue
 
-                    # Use the AI-generated prompt as the quote
-                    ai_quote_text = content_idea.prompt
-                    ai_theme = content_idea.theme
-                    ai_caption = content_idea.caption
-
-                    # Download video and music if not in database
-                    logger.info(f"[{i+1}/{count}] Downloading video and music...")
-                    downloaded_content = self.content_downloader.download_content_for_idea(content_idea)
-
-                    if not downloaded_content["video_path"] or not downloaded_content["music_path"]:
-                        logger.error(f"[{i+1}/{count}] Failed to download required content")
-                        continue
-
-                    # Add downloaded content to database if not exists
-                    from src.database.models import Video, Music, Quote
-
-                    # Check/add video
-                    video_filename = downloaded_content["video_path"].name
-                    video_meta = downloaded_content.get("video_data", {})
-                    video_obj = self.session.query(Video).filter_by(filename=video_filename).first()
-                    if not video_obj:
-                        video_obj = Video(
-                            filename=video_filename,
-                            duration=30,
-                            resolution="1080x1920",
-                            tags=",".join(content_idea.video_search_terms),
-                            theme=ai_theme,
-                            source=video_meta.get("source", "youtube_auto"),
-                            url=video_meta.get("url")
-                        )
-                        self.session.add(video_obj)
-                        self.session.flush()
-                        logger.info(f"Added new video to database: {video_filename}")
-
-                    # Check/add music
-                    music_filename = downloaded_content["music_path"].name
-                    music_obj = self.session.query(Music).filter_by(filename=music_filename).first()
-                    if not music_obj:
-                        music_obj = Music(
-                            filename=music_filename,
-                            duration=30,
-                            bpm=150,
-                            energy_level="high",
-                            tags=",".join(content_idea.music_search_terms),
-                            source="youtube_auto"
-                        )
-                        self.session.add(music_obj)
-                        self.session.flush()
-                        logger.info(f"Added new music to database: {music_filename}")
-
-                    # Check/add quote
-                    quote_obj = self.session.query(Quote).filter_by(text=ai_quote_text).first()
-                    if not quote_obj:
-                        quote_obj = Quote(
-                            text=ai_quote_text,
-                            author="AI Generated",
-                            category=ai_theme,
-                            length=len(ai_quote_text)
-                        )
-                        self.session.add(quote_obj)
-                        self.session.flush()
-                        logger.info(f"Added new quote to database: {ai_quote_text[:50]}...")
-
-                    self.session.commit()
-
-                else:
-                    ai_quote_text = None
-                    ai_theme = theme
-                    ai_caption = None
-
-                    # Select content (video/music based on theme) - old method
-                    if ai_theme or theme:
-                        combination = self.content_selector.find_matching_combination(theme=ai_theme or theme)
-                    else:
-                        combination = self.content_selector.get_random_combination()
-
-                    if not combination:
-                        logger.warning("Could not find valid content combination")
-                        continue
-
-                    video_obj = combination.video
-                    music_obj = combination.music
-                    quote_obj = combination.quote
-
-                logger.debug(f"[{i+1}/{count}] Selected content for theme: {ai_theme or theme}")
-
-                # Use AI-generated quote if available, otherwise use database quote
-                final_quote = ai_quote_text if ai_quote_text else quote_obj.text
-
-                # Generate caption (use AI caption if available, otherwise generate)
-                if ai_caption:
-                    caption = ai_caption
-                    logger.info(f"[{i+1}/{count}] Using AI-generated caption")
-                else:
-                    caption = self.llm.generate(
-                        quote=final_quote,
-                        theme=ai_theme or theme or "motivation",
-                        music_energy=music_obj.energy_level or "high"
+                music_obj = self._select_music(beat_sheet)
+                if not music_obj:
+                    logger.warning(
+                        f"[{i+1}/{count}] No music available for theme '{beat_sheet.theme}' - skipping"
                     )
+                    continue
 
-                # Generate video
-                logger.debug(f"[{i+1}/{count}] Generating video...")
-                from pathlib import Path
+                quote_obj = self.session.query(Quote).filter_by(text=beat_sheet.full_voiceover_text).first()
+                if not quote_obj:
+                    quote_obj = Quote(
+                        text=beat_sheet.full_voiceover_text,
+                        author="AI Generated",
+                        category=beat_sheet.theme,
+                        length=len(beat_sheet.full_voiceover_text),
+                    )
+                    self.session.add(quote_obj)
+                    self.session.flush()
+
+                self.session.commit()
+
+                logger.debug(f"[{i+1}/{count}] Rendering video...")
+                clip_paths = [Path("data/raw/videos") / v.filename for v in video_objs]
+                music_path = Path("data/raw/music") / music_obj.filename
                 result = self.video_generator.generate(
-                    video_path=Path("data/raw/videos") / video_obj.filename,
-                    music_path=Path("data/raw/music") / music_obj.filename,
-                    quote=final_quote,
-                    caption=caption
+                    background_clips=clip_paths,
+                    voiceover=voiceover,
+                    caption=beat_sheet.caption,
+                    music_path=music_path,
                 )
 
                 # Check quality
@@ -434,13 +363,15 @@ class BotOrchestrator:
                     logger.warning(f"Generated video failed quality check (score: {quality_score:.2f})")
                     continue
 
-                # Save to database
+                # Save to database (primary video for the FK - all clips used
+                # are tracked in the metadata sidecar the renderer writes)
+                primary_video = video_objs[0]
                 generated_reel = reel_repo.create(
-                    video_id=video_obj.id,
+                    video_id=primary_video.id,
                     music_id=music_obj.id,
                     quote_id=quote_obj.id,
                     output_path=result["output_path"].as_posix(),
-                    caption=caption,
+                    caption=beat_sheet.caption,
                     status="pending",
                     duration=result["duration"],
                     file_size=result["file_size"],
@@ -448,8 +379,9 @@ class BotOrchestrator:
                 )
 
                 # Update usage counts for all content
-                video_obj.usage_count = (video_obj.usage_count or 0) + 1
-                video_obj.last_used_at = datetime.utcnow()
+                for video_obj in video_objs:
+                    video_obj.usage_count = (video_obj.usage_count or 0) + 1
+                    video_obj.last_used_at = datetime.utcnow()
 
                 music_obj.usage_count = (music_obj.usage_count or 0) + 1
                 music_obj.last_used_at = datetime.utcnow()
@@ -464,18 +396,16 @@ class BotOrchestrator:
                 # Send preview to Telegram
                 if self.telegram_bot:
                     preview_data = {
-                        "video_name": video_obj.filename,
+                        "video_names": [v.filename for v in video_objs],
                         "music_name": music_obj.filename,
-                        "quote": final_quote,
-                        "caption": caption,
-                        "quality_score": generated_reel.quality_score
+                        "hook": beat_sheet.hook,
+                        "body": beat_sheet.body,
+                        "payoff": beat_sheet.payoff,
+                        "caption": beat_sheet.caption,
+                        "quality_score": generated_reel.quality_score,
+                        "theme": beat_sheet.theme,
+                        "duration": result["duration"],
                     }
-                    if use_ai_prompt:
-                        preview_data["ai_generated"] = True
-                        preview_data["theme"] = ai_theme
-                        preview_data["music_search_terms"] = content_idea.music_search_terms
-                        preview_data["video_search_terms"] = content_idea.video_search_terms
-
                     await self.telegram_bot.send_reel_preview(
                         generated_reel.id,
                         preview_data
@@ -485,7 +415,9 @@ class BotOrchestrator:
                     {
                         "id": generated_reel.id,
                         "output_path": str(result["output_path"]),
-                        "caption": caption
+                        "caption": beat_sheet.caption,
+                        "hook": beat_sheet.hook,
+                        "payoff": beat_sheet.payoff,
                     }
                 )
 
@@ -500,233 +432,117 @@ class BotOrchestrator:
         logger.info(f"Generated {len(results)} reels successfully")
         return results
 
-    async def generate_two_part_content(self, count: int = 1, theme: Optional[str] = None) -> List[Dict]:
+    async def _select_qc_approved_videos(
+        self, beat_sheet: BeatSheet, target_duration: float, i: int, count: int
+    ) -> List[Video]:
         """
-        Generate N content reels with two-part quotes (hook + payoff).
-
-        Perfect for TikTok/Reels: eye-catching hook (4s) + powerful payoff
-        
-        Args:
-            count: Number of reels to generate
-            theme: Optional theme (motivation, philosophy, hustle)
-
-        Returns:
-            List of generated reel metadata
+        Downloads over-fetched footage candidates, runs each through the QC
+        decision tree, and returns the top-scoring accepted clips needed to
+        cover `target_duration` (the voiceover's length). Falls back to
+        reusing previously accepted clips from this theme's pool if nothing
+        fresh passes QC, and alerts (rather than silently produces nothing)
+        if the theme's pool is running thin.
         """
-        logger.info(f"Generating {count} two-part reels (theme: {theme})")
+        vibe_description = f"{beat_sheet.theme}: {', '.join(beat_sheet.video_search_terms)}"
+        candidates = self.content_downloader.download_video_candidates(
+            search_terms=beat_sheet.video_search_terms,
+            theme=beat_sheet.theme,
+            count=self.config.get("footage_qc.video_over_fetch_count", 10),
+        )
 
-        results = []
-        reel_repo = GeneratedReelRepository(self.session)
+        scored: List[Tuple[float, Video]] = []
+        for candidate in candidates:
+            result = self.footage_qc.evaluate(
+                candidate_path=candidate["path"],
+                theme=beat_sheet.theme,
+                vibe_description=vibe_description,
+                session=self.session,
+                source=candidate["source"],
+            )
+            if not result.accepted:
+                continue
 
-        for i in range(count):
-            try:
-                # Generate AI-powered two-part quote (with uniqueness check)
-                logger.info(f"[{i+1}/{count}] Generating AI-powered two-part quote...")
-                
-                from src.database.models import Quote
-                quote_data = None
-                
-                # Retry up to 3 times to get a unique quote
-                for attempt in range(3):
-                    candidate_data = self.gemini_generator.generate_two_part_quote()
-                    hook = candidate_data.get("hook", "")
-                    payoff = candidate_data.get("payoff", "")
-                    full_text = f"{hook} {payoff}"
-                    
-                    # Check if this quote text already exists in DB
-                    existing_quote = self.session.query(Quote).filter(Quote.text == full_text).first()
-                    
-                    if not existing_quote:
-                        quote_data = candidate_data
-                        break
-                    else:
-                        logger.warning(f"Generated duplicate quote, retrying... ({full_text[:30]}...)")
-                
-                if not quote_data:
-                    logger.warning(f"Could not generate unique quote after 3 attempts, using last one")
-                    quote_data = candidate_data
+            video_obj = self.session.query(Video).filter_by(filename=candidate["path"].name).first()
+            if not video_obj:
+                video_obj = Video(
+                    filename=candidate["path"].name,
+                    source=candidate["source"],
+                    url=candidate.get("url"),
+                    theme=beat_sheet.theme,
+                    tags=",".join(beat_sheet.video_search_terms),
+                    qc_status="accepted",
+                    qc_composite_score=result.composite_score,
+                    qc_scores=json.dumps(result.scores, default=str),
+                    qc_reason=result.reason,
+                    qc_checked_at=datetime.utcnow(),
+                    phash=result.phash,
+                )
+                self.session.add(video_obj)
+                self.session.flush()
+            scored.append((result.composite_score or 0.0, video_obj))
 
-                hook = quote_data.get("hook", "")
-                payoff = quote_data.get("payoff", "")
-                
-                logger.info(f"[{i+1}/{count}] Hook: {hook[:40]}...")
-                logger.info(f"[{i+1}/{count}] Payoff: {payoff[:40]}...")
+        self.session.commit()
 
-                # Generate AI content idea for video/music selection
-                logger.info(f"[{i+1}/{count}] Generating content idea for video/music...")
-                content_idea = self.gemini_generator.generate_content_idea(
-                    theme=theme,
-                    style="redpill_motivational"
+        health = self.footage_qc.check_pool_health(beat_sheet.theme, self.session)
+        if not health.healthy:
+            logger.warning(
+                f"[{i+1}/{count}] Footage pool for '{beat_sheet.theme}' is thin "
+                f"({health.accepted_count}/{health.floor} accepted clips) - widen search "
+                f"terms or add a curated source for this theme"
+            )
+            if self.telegram_bot:
+                await self.telegram_bot.send_notification(
+                    f"Footage pool for '{beat_sheet.theme}' is thin "
+                    f"({health.accepted_count}/{health.floor} accepted clips) - reels for "
+                    f"this theme may start reusing the same footage",
+                    level="warning",
                 )
 
-                # Generate engaging caption for the two-part quote
-                logger.info(f"[{i+1}/{count}] Generating caption for two-part quote...")
-                full_quote = f"{hook} {payoff}"
-                caption = self.llm.generate(
-                    quote=full_quote,
-                    theme=content_idea.theme or theme or "motivation",
-                    music_energy="high"
-                )
+        needed = VideoGenerator._max_usable_clips(target_duration)
 
-                # Download video and music (with uniqueness check)
-                logger.info(f"[{i+1}/{count}] Downloading video and music...")
-                
-                # Fetch existing video URLs to ensure uniqueness
-                from src.database.models import Video
-                existing_urls = set()
-                try:
-                    # Get all non-null URLs from video table
-                    urls = self.session.query(Video.url).filter(Video.url.isnot(None)).all()
-                    existing_urls = {u[0] for u in urls if u[0]}
-                except Exception as e:
-                    logger.warning(f"Failed to fetch existing video URLs: {e}")
-                
-                downloaded_content = self.content_downloader.download_content_for_idea(
-                    content_idea,
-                    excluded_urls=existing_urls
-                )
+        if not scored:
+            logger.warning(f"[{i+1}/{count}] No fresh candidates passed QC, reusing existing pool")
+            return (
+                self.session.query(Video)
+                .filter(Video.theme == beat_sheet.theme, Video.qc_status == "accepted")
+                .order_by(Video.usage_count.asc())
+                .limit(needed)
+                .all()
+            )
 
-                if not downloaded_content["video_path"] or not downloaded_content["music_path"]:
-                    logger.error(f"[{i+1}/{count}] Failed to download required content")
-                    continue
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [video for _, video in scored[:needed]]
 
-                # Add downloaded content to database if not exists
-                from src.database.models import Video, Music, Quote
+    def _select_music(self, beat_sheet: BeatSheet) -> Optional[Music]:
+        """Downloads music candidates and picks the first usable one, with a
+        pool-reuse fallback if nothing fresh is available."""
+        candidates = self.content_downloader.download_music_candidates(
+            search_terms=beat_sheet.music_search_terms,
+            theme=beat_sheet.theme,
+            count=self.config.get("footage_qc.music_over_fetch_count", 5),
+        )
 
-                # Check/add video
-                video_filename = downloaded_content["video_path"].name
-                video_meta = downloaded_content.get("video_data", {})
-                video_obj = self.session.query(Video).filter_by(filename=video_filename).first()
-                if not video_obj:
-                    video_obj = Video(
-                        filename=video_filename,
-                        duration=30,
-                        resolution="1080x1920",
-                        tags=",".join(content_idea.video_search_terms),
-                        theme=content_idea.theme,
-                        source=video_meta.get("source", "youtube_auto"),
-                        url=video_meta.get("url")
-                    )
-                    self.session.add(video_obj)
-                    self.session.flush()
-                    logger.info(f"Added new video to database: {video_filename}")
+        if not candidates:
+            return (
+                self.session.query(Music)
+                .filter(Music.tags.contains(beat_sheet.theme))
+                .order_by(Music.usage_count.asc())
+                .first()
+            )
 
-                # Check/add music
-                music_filename = downloaded_content["music_path"].name
-                music_obj = self.session.query(Music).filter_by(filename=music_filename).first()
-                if not music_obj:
-                    music_obj = Music(
-                        filename=music_filename,
-                        duration=30,
-                        bpm=150,
-                        energy_level="high",
-                        tags=",".join(content_idea.music_search_terms),
-                        source="youtube_auto"
-                    )
-                    self.session.add(music_obj)
-                    self.session.flush()
-                    logger.info(f"Added new music to database: {music_filename}")
-
-                # Generate two-part video
-                logger.debug(f"[{i+1}/{count}] Generating two-part video...")
-                from pathlib import Path
-                result = self.video_generator.generate_two_part(
-                    video_path=Path("data/raw/videos") / video_obj.filename,
-                    music_path=Path("data/raw/music") / music_obj.filename,
-                    hook=hook,
-                    payoff=payoff,
-                    caption=caption
-                )
-
-                # Check quality
-                quality_result = self.quality_checker.check_integrity(result["output_path"])
-                quality_score = quality_result["quality_score"]
-                is_ok = quality_score >= self.config.get("content.generation.quality_threshold", 0.75)
-
-                if not is_ok:
-                    logger.warning(f"Generated video failed quality check (score: {quality_score:.2f})")
-                    continue
-
-                # Create Quote record with merged hook+payoff text
-                logger.debug(f"[{i+1}/{count}] Creating quote record...")
-                from src.database.models import Quote
-                merged_quote_text = f"{hook} {payoff}"
-                quote_obj = self.session.query(Quote).filter(Quote.text == merged_quote_text).first()
-                if not quote_obj:
-                    quote_obj = Quote(
-                        text=merged_quote_text,
-                        category="two_part_reel",
-                        length=len(merged_quote_text)
-                    )
-                    self.session.add(quote_obj)
-                    self.session.flush()
-                    logger.debug(f"Created new quote record: {quote_obj.id}")
-                else:
-                    logger.debug(f"Using existing quote record: {quote_obj.id}")
-
-                # Save to database
-                logger.debug(f"[{i+1}/{count}] Saving reel to database...")
-                generated_reel = reel_repo.create(
-                    video_id=video_obj.id,
-                    music_id=music_obj.id,
-                    quote_id=quote_obj.id,
-                    output_path=str(result["output_path"]),
-                    caption=caption,
-                    duration=result["duration"],
-                    file_size=result["file_size"],
-                    quality_score=quality_score
-                )
-
-                # Update usage counts for all content
-                video_obj.usage_count = (video_obj.usage_count or 0) + 1
-                video_obj.last_used_at = datetime.utcnow()
-
-                music_obj.usage_count = (music_obj.usage_count or 0) + 1
-                music_obj.last_used_at = datetime.utcnow()
-
-                quote_obj.usage_count = (quote_obj.usage_count or 0) + 1
-                quote_obj.last_used_at = datetime.utcnow()
-
-                self.session.commit()
-
-                logger.info(f"[{i+1}/{count}] Two-part reel #{generated_reel.id} generated successfully")
-
-                # Send preview to Telegram
-                if self.telegram_bot:
-                    preview_data = {
-                        "video_name": video_obj.filename,
-                        "music_name": music_obj.filename,
-                        "hook": hook,
-                        "payoff": payoff,
-                        "caption": caption,
-                        "quality_score": generated_reel.quality_score,
-                        "is_two_part": True
-                    }
-                    await self.telegram_bot.send_reel_preview(
-                        generated_reel.id,
-                        preview_data
-                    )
-
-                results.append(
-                    {
-                        "id": generated_reel.id,
-                        "output_path": str(result["output_path"]),
-                        "caption": caption,
-                        "hook": hook,
-                        "payoff": payoff
-                    }
-                )
-
-            except Exception as e:
-                logger.error(f"Error generating two-part reel {i+1}: {e}")
-                if self.telegram_bot:
-                    await self.telegram_bot.send_notification(
-                        f"Error generating two-part reel: {e}",
-                        level="error"
-                    )
-
-        logger.info(f"Generated {len(results)} two-part reels successfully")
-        return results
+        chosen = candidates[0]
+        music_obj = self.session.query(Music).filter_by(filename=chosen["path"].name).first()
+        if not music_obj:
+            music_obj = Music(
+                filename=chosen["path"].name,
+                source=chosen["source"],
+                url=chosen.get("url"),
+                tags=",".join(beat_sheet.music_search_terms),
+                energy_level="high",
+            )
+            self.session.add(music_obj)
+            self.session.flush()
+        return music_obj
 
     async def schedule_reel(self, reel_id: int) -> None:
         """Schedule an approved reel for publishing."""

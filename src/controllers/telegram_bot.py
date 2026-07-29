@@ -211,23 +211,22 @@ Use buttons below commands for quick actions.
             session.close()
 
     async def generate(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /generate command - generate reels with hook+payoff quotes.
+        """Handle /generate command - generate reels with a voiceover-driven script.
 
         Usage: /generate [count]
-        Generates reels with eye-catching hook (4s) + powerful payoff
-        Perfect for TikTok/Reels first-3-seconds engagement
+        Generates reels via the beat-sheet -> TTS voiceover -> footage QC ->
+        Remotion render pipeline. Duration follows the voiceover, not a
+        fixed length.
         """
         if not await self._check_admin(update, context):
             return
 
         try:
             count = int(context.args[0]) if context.args else 3
-            count = min(count, 10)  # Max 10 two-part videos at a time (slower to generate)
+            count = min(count, 10)  # Cap per invocation - this is a slow pipeline
 
             await update.message.reply_text(
-                f"🎬 Generating {count} two-part reels with hook+payoff...\n\n"
-                f"⏱️ Hook: Eye-catching yellow text (4 seconds)\n"
-                f"💥 Payoff: Powerful white text (remaining time)\n\n"
+                f"🎬 Generating {count} reels (script -> voiceover -> footage QC -> render)...\n\n"
                 f"This may take several minutes.",
                 parse_mode=ParseMode.MARKDOWN
             )
@@ -236,11 +235,10 @@ Use buttons below commands for quick actions.
                 await update.message.reply_text("⚠️ Orchestrator not available")
                 return
 
-            # Generate two-part content
-            results = await self.orchestrator.generate_two_part_content(count=count)
-            
+            results = await self.orchestrator.generate_content(count=count)
+
             await update.message.reply_text(
-                f"✅ Generated {len(results)} two-part reels\n\n"
+                f"✅ Generated {len(results)} reels\n\n"
                 f"Reel IDs: {', '.join([str(r['id']) for r in results])}\n\n"
                 f"Use `/approve <reel_id>` to approve or `/queue` to view all pending.",
                 parse_mode=ParseMode.MARKDOWN
@@ -249,11 +247,7 @@ Use buttons below commands for quick actions.
         except ValueError:
             await update.message.reply_text(
                 "❌ Usage: /generate [count]\n\n"
-                "Example: /generate 5\n\n"
-                "Generates high-engagement reels with:\n"
-                "• Eye-catching hook (random color, 4 sec)\n"
-                "• Powerful payoff (magenta→cyan, 9 sec)\n"
-                "• 13 second total duration"
+                "Example: /generate 5"
             )
         except Exception as e:
             logger.error(f"Generate error: {e}")
@@ -807,25 +801,26 @@ Data updates as you get engagement on Instagram
         try:
             app = Application.builder().token(self.bot_token).build()
 
-            # Handle both single-part (quote) and two-part (hook+payoff) reels
-            is_two_part = reel_data.get('is_two_part', False)
-            if is_two_part:
-                hook = reel_data.get('hook', 'N/A')
-                payoff = reel_data.get('payoff', 'N/A')
-                quote_text = f"🎣 *Hook:* {hook}\n💥 *Payoff:* {payoff}"
-            else:
-                quote = reel_data.get('quote', 'N/A')
-                quote_text = f"💬 *Quote:* {quote}"
+            hook = reel_data.get('hook', 'N/A')
+            body = reel_data.get('body', '')
+            payoff = reel_data.get('payoff', 'N/A')
+            script_text = f"🎣 *Hook:* {hook}"
+            if body:
+                script_text += f"\n📝 *Body:* {body}"
+            script_text += f"\n💥 *Payoff:* {payoff}"
 
+            video_names = ", ".join(reel_data.get('video_names', [])) or 'N/A'
             caption = reel_data.get('caption', 'N/A')
+            duration = reel_data.get('duration', 0)
             preview_msg = f"""
 🎬 *New Reel Generated*
 
-📹 Video: `{reel_data.get('video_name', 'N/A')}`
+📹 Video: `{video_names}`
 🎵 Music: `{reel_data.get('music_name', 'N/A')}`
-{quote_text}
+{script_text}
 ✍️ *Caption:* {caption}
 ⭐ Quality: {reel_data.get('quality_score', 0):.2f}
+⏱️ Duration: {duration:.1f}s
 
 Ready for approval?
             """
