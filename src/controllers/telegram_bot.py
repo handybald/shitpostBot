@@ -134,6 +134,9 @@ Available commands:
 
 *System*
 • `/status` - System health & stats
+• `/scheduler_status` - Scheduler health, next wake-up, pending/failed counts
+• `/retry_failed <scheduled_post_id>` - Give a failed post a fresh retry budget
+• `/publish_now <scheduled_post_id>` - Force-publish a scheduled post immediately
 • `/pause` - Pause automation
 • `/resume` - Resume automation
 
@@ -168,7 +171,7 @@ Use buttons below commands for quick actions.
 
 🔄 *Automation*
 • Status: {"Running ▶️" if self.orchestrator and self.orchestrator.running else "Stopped ⏸️"}
-• Last check: {self._format_time(datetime.utcnow())}
+• Last check: {self._format_time(datetime_helpers.utc_for_db(datetime_helpers.now_utc()))}
 
 ⚙️ *Configuration*
 • Theme rotation: {self.config.get("content.selection.theme_rotation", True)}
@@ -275,8 +278,11 @@ Use buttons below commands for quick actions.
                 return
 
             await update.message.reply_text(f"🚀 Publishing reel #{reel_id} now...", parse_mode=ParseMode.MARKDOWN)
-            await self.orchestrator.publish_reel_to_instagram(reel_id)
-            await update.message.reply_text(f"✅ Reel #{reel_id} published to Instagram!", parse_mode=ParseMode.MARKDOWN)
+            success, message = await self.orchestrator.publish_reel_to_instagram(reel_id)
+            if success:
+                await update.message.reply_text(f"✅ {message}", parse_mode=ParseMode.MARKDOWN)
+            else:
+                await update.message.reply_text(f"❌ {message}", parse_mode=ParseMode.MARKDOWN)
 
         except ValueError:
             await update.message.reply_text("❌ Invalid reel ID (must be a number)")
@@ -400,15 +406,28 @@ Status: {reel.status}
                 # Update status to approved
                 reel_repo.update_status(reel_id, "approved")
 
-                # Schedule for posting
+                # Schedule for posting - only report "scheduled" if it
+                # actually succeeded (a DB failure here must never be
+                # reported as success).
                 if self.orchestrator:
-                    await self.orchestrator.schedule_reel(reel_id)
-
-                await update.message.reply_text(
-                    f"✅ Reel #{reel_id} approved and scheduled for publishing",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                logger.info(f"Reel #{reel_id} approved by user {update.effective_user.id}")
+                    success, message = await self.orchestrator.schedule_reel(reel_id)
+                    if success:
+                        await update.message.reply_text(
+                            f"✅ Reel #{reel_id} approved and scheduled for publishing\n{message}",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        logger.info(f"Reel #{reel_id} approved and scheduled by user {update.effective_user.id}")
+                    else:
+                        await update.message.reply_text(
+                            f"⚠️ Reel #{reel_id} approved but scheduling FAILED: {message}",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        logger.error(f"Reel #{reel_id} approved but scheduling failed: {message}")
+                else:
+                    await update.message.reply_text(
+                        f"✅ Reel #{reel_id} approved (orchestrator unavailable, not scheduled)",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
 
             finally:
                 session.close()
@@ -891,25 +910,31 @@ Ready for approval?
             reel_repo = GeneratedReelRepository(session)
             reel_repo.update_status(reel_id, "approved")
 
+            success = False
+            message = "Orchestrator unavailable"
             if self.orchestrator:
-                await self.orchestrator.schedule_reel(reel_id)
+                success, message = await self.orchestrator.schedule_reel(reel_id)
 
-            await query.answer("✅ Reel approved and scheduled!", show_alert=True)
+            if success:
+                await query.answer("✅ Reel approved and scheduled!", show_alert=True)
+                caption = f"✅ *Reel #{reel_id} Approved*\n\n✓ {message}"
+                text = f"✅ Reel #{reel_id} approved and scheduled"
+            else:
+                await query.answer(f"⚠️ Approved but scheduling failed: {message}", show_alert=True)
+                caption = f"⚠️ *Reel #{reel_id} Approved*\n\n❌ Scheduling failed: {message}"
+                text = f"⚠️ Reel #{reel_id} approved but scheduling failed: {message}"
 
             # Try to edit caption if it's a video message, otherwise edit text
             try:
-                await query.edit_message_caption(
-                    caption=f"✅ *Reel #{reel_id} Approved*\n\n✓ Scheduled for posting",
-                    parse_mode=ParseMode.MARKDOWN
-                )
+                await query.edit_message_caption(caption=caption, parse_mode=ParseMode.MARKDOWN)
             except:
                 # Fallback if message is text-only
                 try:
-                    await query.edit_message_text(f"✅ Reel #{reel_id} approved and scheduled")
+                    await query.edit_message_text(text)
                 except:
                     pass  # Message already edited by Telegram
 
-            logger.info(f"Reel #{reel_id} approved via button")
+            logger.info(f"Reel #{reel_id} approved via button (scheduled: {success})")
 
         except Exception as e:
             logger.error(f"Approve error: {e}")
@@ -1176,6 +1201,100 @@ Ready for approval?
             logger.error(f"Get_schedule error: {e}")
             await update.message.reply_text(f"❌ Error: {str(e)}")
 
+    async def scheduler_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /scheduler_status command - scheduler health overview."""
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            if not self.orchestrator:
+                await update.message.reply_text("❌ Orchestrator not available")
+                return
+
+            status = await self.orchestrator.get_scheduler_status()
+            counts = status["counts"]
+
+            now_local_str = status["now_local"].strftime("%Y-%m-%d %H:%M:%S %Z")
+            now_utc_str = status["now_utc"].strftime("%Y-%m-%d %H:%M:%S UTC")
+            next_wakeup = status["next_wakeup_utc"]
+            next_wakeup_str = next_wakeup.strftime("%Y-%m-%d %H:%M:%S %Z") if next_wakeup else "unknown"
+
+            msg = f"""
+🩺 *Scheduler Status*
+
+Running: {"▶️ yes" if status["running"] else "⏸️ no"}
+Now (UTC): {now_utc_str}
+Now ({status["timezone"]}): {now_local_str}
+Next wake-up: {next_wakeup_str}
+
+📊 *Scheduled posts*
+• Pending: {counts.get("pending", 0)}
+• Publishing: {counts.get("publishing", 0)}
+• Retry wait: {counts.get("retry_wait", 0)}
+• Failed: {counts.get("failed", 0)}
+• Overdue (due but not yet claimed): {status["overdue"]}
+            """
+
+            if status["recent_failed"]:
+                msg += "\n❌ *Recent failures*\n"
+                for f in status["recent_failed"]:
+                    err = (f["error"] or "unknown error")[:150]
+                    msg += f"• Scheduled #{f['id']} (reel #{f['reel_id']}): {err}\n"
+
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+        except Exception as e:
+            logger.error(f"Scheduler status error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def retry_failed(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /retry_failed <scheduled_post_id> - give a failed post a fresh retry budget."""
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            post_id = int(context.args[0]) if context.args else None
+            if not post_id:
+                await update.message.reply_text("❌ Usage: /retry_failed <scheduled_post_id>")
+                return
+
+            if not self.orchestrator:
+                await update.message.reply_text("❌ Orchestrator not available")
+                return
+
+            success, message = await self.orchestrator.retry_failed(post_id)
+            await update.message.reply_text(f"{'✅' if success else '❌'} {message}", parse_mode=ParseMode.MARKDOWN)
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid scheduled_post_id. Must be a number.")
+        except Exception as e:
+            logger.error(f"Retry_failed error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
+    async def publish_now(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /publish_now <scheduled_post_id> - force-publish a specific scheduled post immediately."""
+        if not await self._check_admin(update, context):
+            return
+
+        try:
+            post_id = int(context.args[0]) if context.args else None
+            if not post_id:
+                await update.message.reply_text("❌ Usage: /publish_now <scheduled_post_id>")
+                return
+
+            if not self.orchestrator:
+                await update.message.reply_text("❌ Orchestrator not available")
+                return
+
+            success, message = await self.orchestrator.publish_now(post_id)
+            await update.message.reply_text(f"{'✅' if success else '❌'} {message}", parse_mode=ParseMode.MARKDOWN)
+
+        except ValueError:
+            await update.message.reply_text("❌ Invalid scheduled_post_id. Must be a number.")
+        except Exception as e:
+            logger.error(f"Publish_now error: {e}")
+            await update.message.reply_text(f"❌ Error: {str(e)}")
+
     async def start_polling(self) -> None:
         """Start Telegram bot polling."""
         if not self.bot_token:
@@ -1209,6 +1328,11 @@ Ready for approval?
         application.add_handler(CommandHandler("approve_at", self.approve_at))
         application.add_handler(CommandHandler("set_schedule", self.set_schedule))
         application.add_handler(CommandHandler("get_schedule", self.get_schedule))
+
+        # Add scheduler reliability command handlers
+        application.add_handler(CommandHandler("scheduler_status", self.scheduler_status))
+        application.add_handler(CommandHandler("retry_failed", self.retry_failed))
+        application.add_handler(CommandHandler("publish_now", self.publish_now))
 
         # Add button callbacks
         application.add_handler(CallbackQueryHandler(self.button_approve, pattern="^approve_"))

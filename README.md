@@ -76,6 +76,23 @@ print("✅ System ready!")
 EOF
 ```
 
+### Testing the Scheduler
+
+```bash
+# Run the unit/integration test suite (uses fake clocks/publishers - no
+# credentials or network access needed)
+python -m pytest -q
+
+# Local smoke test: schedules a reel with a fake publisher two minutes
+# ahead and prints every state transition (pending -> publishing ->
+# published). Uses a throwaway SQLite database - never touches
+# database/bot.db and never makes a real Instagram/network call.
+python3 scripts/smoke_test_scheduler.py            # simulated clock (instant)
+python3 scripts/smoke_test_scheduler.py --real-time # actually waits ~2 minutes
+```
+
+Telegram commands for scheduler health: `/scheduler_status`, `/retry_failed <scheduled_post_id>`, `/publish_now <scheduled_post_id>`.
+
 ---
 
 ## 📚 Documentation

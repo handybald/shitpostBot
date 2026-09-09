@@ -1,12 +1,20 @@
 """Data access layer - repositories for database operations"""
 
 from datetime import datetime, timedelta
+from typing import List, Optional
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, and_, or_
+from sqlalchemy import desc, and_, or_, update
 from src.database.models import (
     Video, Music, Quote, GeneratedReel, ScheduledPost, PublishedPost,
     PostMetrics, ContentCalendar, Job, AgentLog, ScheduleConfig
 )
+from src.utils import datetime_helpers
+
+# Scheduling retry policy (see issue #2): max 5 attempts total, with these
+# delays between consecutive failed attempts (4 gaps between 5 attempts).
+MAX_PUBLISH_ATTEMPTS = 5
+RETRY_DELAYS_MINUTES = [1, 5, 15, 60]
+STALE_PUBLISHING_MINUTES = 15
 
 
 class VideoRepository:
@@ -161,14 +169,14 @@ class ScheduledPostRepository:
         self.session = session
 
     def create(self, reel_id: int, scheduled_time: datetime):
-        post = ScheduledPost(reel_id=reel_id, scheduled_time=scheduled_time)
+        post = ScheduledPost(reel_id=reel_id, scheduled_time=scheduled_time, status="pending")
         self.session.add(post)
         self.session.commit()
         return post
 
-    def get_due_posts(self):
-        """Get posts scheduled for now or past"""
-        now = datetime.utcnow()
+    def get_due_posts(self, now: Optional[datetime] = None):
+        """Get pending posts scheduled for now or past (does not claim them)."""
+        now = now if now is not None else datetime_helpers.utc_for_db(datetime_helpers.now_utc())
         return self.session.query(ScheduledPost).filter(
             and_(
                 ScheduledPost.scheduled_time <= now,
@@ -176,9 +184,170 @@ class ScheduledPostRepository:
             )
         ).all()
 
+    def get_claimable(self, now: Optional[datetime] = None) -> List[ScheduledPost]:
+        """Get all posts eligible to be claimed for publishing right now.
+
+        Includes fresh `pending` posts whose scheduled_time has arrived and
+        `retry_wait` posts whose next_attempt_at has arrived. Does not claim
+        them - callers must use `claim()` on each candidate id.
+        """
+        now = now if now is not None else datetime_helpers.utc_for_db(datetime_helpers.now_utc())
+        return self.session.query(ScheduledPost).filter(
+            or_(
+                and_(ScheduledPost.status == "pending", ScheduledPost.scheduled_time <= now),
+                and_(ScheduledPost.status == "retry_wait", ScheduledPost.next_attempt_at <= now),
+            )
+        ).all()
+
+    def claim(self, post_id: int, expected_status: str, now: Optional[datetime] = None) -> bool:
+        """Atomically claim a single row for publishing.
+
+        Performs a conditional UPDATE (`WHERE id = :id AND status = :expected`)
+        so that concurrent workers racing on the same row can never both
+        succeed - only the worker whose UPDATE actually changes a row (rowcount
+        == 1) may proceed to publish. Never publishes the same ScheduledPost
+        concurrently.
+        """
+        now = now if now is not None else datetime_helpers.utc_for_db(datetime_helpers.now_utc())
+        result = self.session.execute(
+            update(ScheduledPost)
+            .where(ScheduledPost.id == post_id, ScheduledPost.status == expected_status)
+            .values(status="publishing", claimed_at=now, last_attempt_at=now)
+        )
+        self.session.commit()
+        return result.rowcount == 1
+
+    def force_claim_now(self, post_id: int) -> bool:
+        """Claim a post for immediate manual publishing (/post_now, /publish_now),
+        regardless of scheduled_time/next_attempt_at, as long as it is not
+        already publishing/published/cancelled.
+        """
+        now = datetime_helpers.utc_for_db(datetime_helpers.now_utc())
+        result = self.session.execute(
+            update(ScheduledPost)
+            .where(ScheduledPost.id == post_id, ScheduledPost.status.in_(["pending", "retry_wait", "failed"]))
+            .values(status="publishing", claimed_at=now, last_attempt_at=now)
+        )
+        self.session.commit()
+        return result.rowcount == 1
+
+    def mark_published(self, post_id: int):
+        """Transition a claimed row to the terminal `published` state."""
+        now = datetime_helpers.utc_for_db(datetime_helpers.now_utc())
+        post = self.session.query(ScheduledPost).get(post_id)
+        if post:
+            post.status = "published"
+            post.published_at = now
+            post.error_message = None
+            post.next_attempt_at = None
+            self.session.commit()
+        return post
+
+    def mark_retry(self, post_id: int, sanitized_error: str, retry_count: int):
+        """Transition a claimed row back to `retry_wait` after a failed attempt.
+
+        `retry_count` is the *new* attempt count (i.e. the number of attempts
+        made so far, including the one that just failed).
+        """
+        now_aware = datetime_helpers.now_utc()
+        delay_minutes = RETRY_DELAYS_MINUTES[min(retry_count - 1, len(RETRY_DELAYS_MINUTES) - 1)]
+        next_attempt = datetime_helpers.utc_for_db(now_aware + timedelta(minutes=delay_minutes))
+        post = self.session.query(ScheduledPost).get(post_id)
+        if post:
+            post.status = "retry_wait"
+            post.retry_count = retry_count
+            post.error_message = sanitized_error
+            post.last_attempt_at = datetime_helpers.utc_for_db(now_aware)
+            post.next_attempt_at = next_attempt
+            self.session.commit()
+        return post
+
+    def record_failure(self, post_id: int, sanitized_error: str) -> str:
+        """Record a failed publish attempt and apply the retry policy
+        (max 5 attempts total; see MAX_PUBLISH_ATTEMPTS/RETRY_DELAYS_MINUTES).
+
+        Returns the resulting status ("retry_wait" or "failed"), or
+        "missing" if the post no longer exists.
+        """
+        post = self.session.query(ScheduledPost).get(post_id)
+        if not post:
+            return "missing"
+
+        new_count = (post.retry_count or 0) + 1
+        if new_count >= MAX_PUBLISH_ATTEMPTS:
+            self.mark_failed(post_id, sanitized_error, new_count)
+            return "failed"
+
+        self.mark_retry(post_id, sanitized_error, new_count)
+        return "retry_wait"
+
+    def mark_failed(self, post_id: int, sanitized_error: str, retry_count: int):
+        """Transition a claimed row to the terminal `failed` state (retry budget exhausted)."""
+        now = datetime_helpers.utc_for_db(datetime_helpers.now_utc())
+        post = self.session.query(ScheduledPost).get(post_id)
+        if post:
+            post.status = "failed"
+            post.retry_count = retry_count
+            post.error_message = sanitized_error
+            post.last_attempt_at = now
+            post.next_attempt_at = None
+            self.session.commit()
+        return post
+
+    def reset_for_manual_retry(self, post_id: int) -> Optional[ScheduledPost]:
+        """Used by /retry_failed: give a `failed` post a fresh retry budget,
+        immediately eligible for claiming.
+
+        Returns the updated post, or None if it doesn't exist or isn't
+        currently `failed` (a no-op - this only applies to terminal failures).
+        """
+        now = datetime_helpers.utc_for_db(datetime_helpers.now_utc())
+        post = self.session.query(ScheduledPost).get(post_id)
+        if not post or post.status != "failed":
+            return None
+
+        post.status = "retry_wait"
+        post.retry_count = 0
+        post.next_attempt_at = now
+        post.error_message = None
+        self.session.commit()
+        return post
+
+    def recover_stale_publishing(self, now: Optional[datetime] = None, older_than_minutes: int = STALE_PUBLISHING_MINUTES) -> int:
+        """Reclaim rows stuck in `publishing` after a crash/restart.
+
+        Any row still `publishing` whose `claimed_at` is older than
+        `older_than_minutes` is moved back to `retry_wait` with
+        `next_attempt_at` set to now, so it becomes immediately claimable
+        again. retry_count is preserved (a restart is not counted as a
+        failed publish attempt). Returns the number of rows recovered.
+        """
+        now_aware = datetime_helpers.now_utc()
+        now_db = datetime_helpers.utc_for_db(now_aware)
+        cutoff = datetime_helpers.utc_for_db(now_aware - timedelta(minutes=older_than_minutes))
+
+        stale = self.session.query(ScheduledPost).filter(
+            ScheduledPost.status == "publishing",
+            ScheduledPost.claimed_at.isnot(None),
+            ScheduledPost.claimed_at <= cutoff,
+        ).all()
+
+        for post in stale:
+            post.status = "retry_wait"
+            post.next_attempt_at = now_db
+            post.error_message = (
+                (post.error_message + " | " if post.error_message else "")
+                + "Recovered after restart (stale claimed_at)"
+            )
+
+        if stale:
+            self.session.commit()
+
+        return len(stale)
+
     def get_upcoming(self, days: int = 7):
         """Get posts scheduled within next N days"""
-        now = datetime.utcnow()
+        now = datetime_helpers.utc_for_db(datetime_helpers.now_utc())
         future = now + timedelta(days=days)
         return self.session.query(ScheduledPost).filter(
             and_(
@@ -193,7 +362,7 @@ class ScheduledPostRepository:
         if post:
             post.status = status
             if status == "published":
-                post.published_at = datetime.utcnow()
+                post.published_at = datetime_helpers.utc_for_db(datetime_helpers.now_utc())
             self.session.commit()
         return post
 
@@ -220,7 +389,7 @@ class ScheduledPostRepository:
 
     def get_calendar_view(self, days: int = 30):
         """Get all scheduled posts for calendar view, ordered by time"""
-        now = datetime.utcnow()
+        now = datetime_helpers.utc_for_db(datetime_helpers.now_utc())
         future = now + timedelta(days=days)
         return self.session.query(ScheduledPost).filter(
             and_(
@@ -228,6 +397,24 @@ class ScheduledPostRepository:
                 ScheduledPost.scheduled_time <= future
             )
         ).order_by(ScheduledPost.scheduled_time).all()
+
+    def count_by_status(self, status: str) -> int:
+        return self.session.query(ScheduledPost).filter(ScheduledPost.status == status).count()
+
+    def get_overdue_count(self, now: Optional[datetime] = None) -> int:
+        """Count posts that are due but not yet claimed/published (pending or retry_wait)."""
+        now = now if now is not None else datetime_helpers.utc_for_db(datetime_helpers.now_utc())
+        return self.session.query(ScheduledPost).filter(
+            or_(
+                and_(ScheduledPost.status == "pending", ScheduledPost.scheduled_time <= now),
+                and_(ScheduledPost.status == "retry_wait", ScheduledPost.next_attempt_at <= now),
+            )
+        ).count()
+
+    def get_recent_failed(self, limit: int = 10):
+        return self.session.query(ScheduledPost).filter(
+            ScheduledPost.status == "failed"
+        ).order_by(desc(ScheduledPost.last_attempt_at)).limit(limit).all()
 
 
 class PublishedPostRepository:
