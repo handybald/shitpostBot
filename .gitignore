@@ -82,3 +82,11 @@ htmlcov/
 *.cache
 
 *.jsonl
+
+# SQLite runtime files
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Local AI-agent permissions
+.claude/settings.local.json
