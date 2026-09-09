@@ -5,7 +5,11 @@ instagram:
   access_token: ${IG_ACCESS_TOKEN}
   app_id: ${IG_APP_ID}
   app_secret: ${IG_APP_SECRET}
-  api_version: "v19.0"
+  # v19.0 expired on 2026-05-21 - do not pin back to it. Override via
+  # INSTAGRAM_API_VERSION if Meta deprecates the current default.
+  api_version: ${INSTAGRAM_API_VERSION:v22.0}
+  # Configurable because it depends on the account/login integration.
+  graph_base_url: ${INSTAGRAM_GRAPH_BASE_URL:https://graph.instagram.com}
 
 telegram:
   bot_token: ${TELEGRAM_BOT_TOKEN}
@@ -112,12 +116,14 @@ content:
 
 scheduling:
   enabled: true
+  # day: 0=Monday .. 6=Sunday (ScheduleConfig.day_of_week convention, used
+  # consistently everywhere - see issue #2)
   post_times:
-    - day: 1  # Monday
+    - day: 0  # Monday
       time: "18:00"
-    - day: 3  # Wednesday
+    - day: 2  # Wednesday
       time: "18:00"
-    - day: 5  # Friday
+    - day: 4  # Friday
       time: "18:00"
   timezone: "Europe/Istanbul"
   calendar_buffer_days: 30  # Populate calendar 30 days in advance

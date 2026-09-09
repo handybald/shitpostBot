@@ -113,16 +113,30 @@ class GeneratedReel(Base):
 
 
 class ScheduledPost(Base):
-    """Posts scheduled for publishing"""
+    """Posts scheduled for publishing.
+
+    Valid `status` values (state machine, see issue #2):
+        pending      - waiting for scheduled_time to arrive
+        publishing   - claimed by a worker, in flight
+        retry_wait   - a publish attempt failed, waiting for next_attempt_at
+        published    - terminal success
+        failed       - terminal failure (retry budget exhausted)
+        cancelled    - terminal, manually cancelled
+    """
     __tablename__ = "scheduled_posts"
 
     id = Column(Integer, primary_key=True)
     reel_id = Column(Integer, ForeignKey("generated_reels.id"), nullable=False, unique=True)
     scheduled_time = Column(DateTime, nullable=False)
 
-    status = Column(String(50), default="pending")  # pending, published, failed, cancelled
+    status = Column(String(50), default="pending")
     retry_count = Column(Integer, default=0)
     error_message = Column(Text)
+
+    # State-machine timestamps (added for issue #2 - reliable scheduler)
+    last_attempt_at = Column(DateTime)
+    next_attempt_at = Column(DateTime)
+    claimed_at = Column(DateTime)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     published_at = Column(DateTime)
@@ -131,7 +145,7 @@ class ScheduledPost(Base):
     reel = relationship("GeneratedReel", back_populates="scheduled_post")
 
     def __repr__(self):
-        return f"<ScheduledPost {self.id} scheduled={self.scheduled_time}>"
+        return f"<ScheduledPost {self.id} scheduled={self.scheduled_time} status={self.status}>"
 
 
 class PublishedPost(Base):

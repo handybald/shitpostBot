@@ -23,14 +23,16 @@ from src.utils.logger import get_logger
 from src.utils.config_loader import get_config_instance
 from src.utils import datetime_helpers
 from src.database import get_session
-from src.database.models import PublishedPost
+from src.database.models import PublishedPost, ScheduledPost
 from src.database.repositories import (
     GeneratedReelRepository, ScheduledPostRepository,
     PublishedPostRepository,
-    ContentCalendarRepository, JobRepository, ScheduleConfigRepository
+    ContentCalendarRepository, JobRepository, ScheduleConfigRepository,
+    MAX_PUBLISH_ATTEMPTS
 )
 from src.processors import ContentSelector, VideoGenerator, QualityChecker
 from src.services import InstagramService, LLMProvider
+from src.services.instagram import InstagramAuthError, sanitize_error_text
 from src.services.gemini_content_generator import GeminiContentGenerator
 from src.services.content_downloader import ContentDownloader
 
@@ -82,6 +84,14 @@ class BotOrchestrator:
         self.llm = LLMProvider.from_config()
         self.gemini_generator = GeminiContentGenerator()
         self.content_downloader = ContentDownloader()
+
+        # Read-only credential/permission validation - never publishes.
+        await self._run_instagram_preflight()
+
+        # Reclaim any rows stuck in `publishing` from a previous process
+        # that crashed/restarted mid-publish, before we start scheduling
+        # new work.
+        self._recover_stale_publishing()
 
         # Schedule background jobs
         self._schedule_jobs()
@@ -231,7 +241,7 @@ class BotOrchestrator:
         try:
             logger.debug("Running calendar_check_job")
 
-            now = datetime.utcnow()
+            now = datetime_helpers.utc_for_db(datetime_helpers.now_utc())
             cal_repo = ContentCalendarRepository(self.session)
 
             # Get entries due for publishing - use ContentCalendar model directly
@@ -260,31 +270,43 @@ class BotOrchestrator:
             logger.error(f"Error in metrics_job: {e}")
 
     async def publish_scheduled_job(self) -> None:
-        """Background job: Publish scheduled posts."""
+        """Background job: claim and publish due scheduled posts.
+
+        Uses a fresh database session for the entire job (never the
+        orchestrator's long-lived session), closed in `finally`, so that
+        schedule writes and the due-job path never share a session. Each
+        candidate row is claimed atomically (conditional UPDATE) before
+        being published, so the same ScheduledPost can never be published
+        concurrently by two workers/ticks.
+        """
+        session = get_session()
         try:
             logger.debug("Running publish_scheduled_job")
+            sched_repo = ScheduledPostRepository(session)
 
-            reel_repo = GeneratedReelRepository(self.session)
-            sched_repo = ScheduledPostRepository(self.session)
+            now_utc_aware = datetime_helpers.now_utc()
+            now_db = datetime_helpers.utc_for_db(now_utc_aware)
+            logger.debug(f"Checking for scheduled posts. Current UTC time: {now_db}")
 
-            # Get scheduled posts that are ready (using UTC for DB comparison)
-            now_utc = datetime.utcnow()
-            logger.debug(f"Checking for scheduled posts. Current UTC time: {now_utc}")
-            
-            from src.database.models import ScheduledPost
-            scheduled = sched_repo.session.query(ScheduledPost).filter(
-                ScheduledPost.scheduled_time <= now_utc,
-                ScheduledPost.status.in_(["scheduled", "pending"]) # Check both just in case
-            ).all()
+            candidates = sched_repo.get_claimable(now=now_db)
+            logger.debug(f"Found {len(candidates)} scheduled posts eligible to claim")
 
-            logger.debug(f"Found {len(scheduled)} scheduled posts ready to publish")
+            for candidate in candidates:
+                claimed = sched_repo.claim(candidate.id, expected_status=candidate.status, now=now_db)
+                if not claimed:
+                    # Another worker/tick already claimed this row.
+                    continue
 
-            for post in scheduled:
-                logger.info(f"Publishing scheduled reel #{post.reel_id} (scheduled for {post.scheduled_time})")
-                await self.publish_reel_to_instagram(post.reel_id)
+                logger.info(
+                    f"Claimed scheduled post #{candidate.id} for reel #{candidate.reel_id} "
+                    f"(scheduled for {candidate.scheduled_time})"
+                )
+                await self._execute_publish(session, candidate.id, candidate.reel_id, notify=True)
 
         except Exception as e:
             logger.error(f"Error in publish_scheduled_job: {e}")
+        finally:
+            session.close()
 
     async def generate_content(self, count: int = 1, theme: Optional[str] = None) -> List[Dict]:
         """
@@ -728,8 +750,13 @@ class BotOrchestrator:
         logger.info(f"Generated {len(results)} two-part reels successfully")
         return results
 
-    async def schedule_reel(self, reel_id: int) -> None:
-        """Schedule an approved reel for publishing."""
+    async def schedule_reel(self, reel_id: int) -> Tuple[bool, str]:
+        """Schedule an approved reel for publishing.
+
+        Returns (success, message) so callers (Telegram) can only report
+        "scheduled" when this actually succeeded - a DB failure here must
+        never be reported as success.
+        """
         session = get_session()
         try:
             reel_repo = GeneratedReelRepository(session)
@@ -737,156 +764,62 @@ class BotOrchestrator:
 
             reel = reel_repo.get_by_id(reel_id)
             if not reel:
-                logger.error(f"Reel #{reel_id} not found")
-                return
+                return False, f"Reel #{reel_id} not found"
+
+            existing = sched_repo.get_by_reel_id(reel_id)
+            if existing:
+                return False, f"Reel #{reel_id} is already scheduled"
 
             # Get next scheduled time from database config
             next_time = self._get_next_scheduled_time_from_db()
             if not next_time:
-                logger.warning("No scheduled times configured")
-                return
+                return False, "No scheduled times configured"
 
             # Create scheduled post
-            scheduled = sched_repo.create(
-                reel_id=reel_id,
-                scheduled_time=next_time
-            )
+            sched_repo.create(reel_id=reel_id, scheduled_time=next_time)
 
             tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
             formatted_time = datetime_helpers.format_datetime_for_display(next_time, tz_name)
 
-            logger.info(f"Reel #{reel_id} scheduled for {formatted_time}")
+            message = f"Reel #{reel_id} scheduled for {formatted_time}"
+            logger.info(message)
 
             if self.telegram_bot:
-                await self.telegram_bot.send_notification(
-                    f"✅ Reel #{reel_id} scheduled for {formatted_time}",
-                    level="success"
-                )
+                await self.telegram_bot.send_notification(f"✅ {message}", level="success")
+
+            return True, message
 
         except Exception as e:
             logger.error(f"Error scheduling reel: {e}")
+            return False, f"Error scheduling reel: {e}"
         finally:
             session.close()
 
-    async def publish_reel_to_instagram(self, reel_id: int) -> None:
-        """Publish a reel to Instagram using Graph API with S3 storage."""
+    async def publish_reel_to_instagram(self, reel_id: int) -> Tuple[bool, str]:
+        """Manually publish a reel right now (used by /post_now and the
+        legacy content-calendar path), bypassing the schedule but going
+        through the exact same claim + state-machine + typed-exception
+        pipeline as the background job.
+
+        Returns (success, message).
+        """
         session = get_session()
         try:
-            reel_repo = GeneratedReelRepository(session)
-            pub_repo = PublishedPostRepository(session)
             sched_repo = ScheduledPostRepository(session)
-            
-            reel = reel_repo.get_by_id(reel_id)
 
-            if not reel:
-                logger.error(f"Reel #{reel_id} not found")
-                return
+            scheduled_post = sched_repo.get_by_reel_id(reel_id)
+            if not scheduled_post:
+                now_db = datetime_helpers.utc_for_db(datetime_helpers.now_utc())
+                scheduled_post = sched_repo.create(reel_id=reel_id, scheduled_time=now_db)
 
-            # Check if already published
-            existing_pub = session.query(PublishedPost).filter_by(reel_id=reel_id).first()
-            if existing_pub:
-                logger.warning(f"Reel #{reel_id} already published (media_id: {existing_pub.instagram_media_id})")
-                if self.telegram_bot:
-                    await self.telegram_bot.send_notification(
-                        f"⚠️ Reel #{reel_id} was already published\nMedia ID: {existing_pub.instagram_media_id}",
-                        level="info"
-                    )
-                
-                # Ensure scheduled post is marked as published to stop the loop
-                sched_post = sched_repo.get_by_reel_id(reel_id)
-                if sched_post:
-                    sched_repo.update_status(sched_post.id, "published")
-                return
+            if not sched_repo.force_claim_now(scheduled_post.id):
+                # Refresh to report the actual current state (e.g. already
+                # publishing/published by another path).
+                session.refresh(scheduled_post)
+                return False, f"Reel #{reel_id} could not be claimed (status: {scheduled_post.status})"
 
-            logger.info(f"Publishing reel #{reel_id} to Instagram via Graph API...")
-
-            video_path = Path(reel.output_path)
-            if not video_path.exists():
-                logger.error(f"Video file not found: {video_path}")
-                return
-
-            # Get config
-            config = get_config_instance()
-            s3_bucket = config.get("aws.s3_bucket_name")
-            s3_region = config.get("aws.region", "us-east-1")
-            
-            if not s3_bucket:
-                logger.error("S3 bucket not configured")
-                if self.telegram_bot:
-                    await self.telegram_bot.send_notification(
-                        "❌ S3 bucket not configured. Add AWS credentials to .env",
-                        level="error"
-                    )
-                return
-
-            from src.services import InstagramService
-            instagram = InstagramService.from_config()
-            
-            # Upload to S3 reels/ directory
-            s3_key = f"reels/{video_path.name}"
-            logger.info(f"Uploading to S3: s3://{s3_bucket}/{s3_key}")
-            
-            s3_url = instagram.s3_upload_and_presign(
-                local_path=video_path,
-                bucket=s3_bucket,
-                region=s3_region,
-                s3_key=s3_key,
-                expires=7200
-            )
-            
-            logger.info(f"S3 upload complete: {s3_url}")
-            logger.info(f"Publishing to Instagram via Graph API...")
-            
-            # Publish using Graph API
-            media_id = instagram.publish_reel(
-                video_url=s3_url,
-                caption=reel.caption,
-                video_path=video_path,
-                poll_seconds=10,
-                max_polls=60
-            )
-            
-            logger.info(f"✅ Reel #{reel_id} published successfully (media_id: {media_id})")
-
-            # Save to database
-            pub_repo.create(
-                reel_id=reel_id,
-                instagram_media_id=media_id,
-                caption=reel.caption,
-                s3_url=f"s3://{s3_bucket}/{s3_key}"
-            )
-            
-            # Update reel status
-            reel_repo.update_status(reel_id, "published")
-
-            # Update scheduled post status
-            sched_post = sched_repo.get_by_reel_id(reel_id)
-            if sched_post:
-                sched_repo.update_status(sched_post.id, "published")
-
-            if self.telegram_bot:
-                await self.telegram_bot.send_notification(
-                    f"✅ Reel #{reel_id} published to Instagram!\n"
-                    f"Media ID: {media_id}\n"
-                    f"S3: s3://{s3_bucket}/{s3_key}",
-                    level="success"
-                )
-
-            logger.info(f"✅ Reel #{reel_id} published successfully")
-
-            if self.telegram_bot:
-                await self.telegram_bot.send_notification(
-                    f"✅ Reel #{reel_id} published to Instagram!",
-                    level="success"
-                )
-
-        except Exception as e:
-            logger.error(f"Error publishing reel: {e}")
-            if self.telegram_bot:
-                await self.telegram_bot.send_notification(
-                    f"❌ Failed to publish reel #{reel_id}: {e}",
-                    level="error"
-                )
+            outcome = await self._execute_publish(session, scheduled_post.id, reel_id, notify=False)
+            return outcome
         finally:
             session.close()
 
@@ -895,93 +828,270 @@ class BotOrchestrator:
         if entry.reel_id:
             await self.publish_reel_to_instagram(entry.reel_id)
 
+    async def retry_failed(self, scheduled_post_id: int) -> Tuple[bool, str]:
+        """Handle /retry_failed <id>: give a `failed` scheduled post a fresh
+        retry budget and attempt to publish it immediately."""
+        session = get_session()
+        try:
+            sched_repo = ScheduledPostRepository(session)
+            post = sched_repo.reset_for_manual_retry(scheduled_post_id)
+            if not post:
+                return False, f"Scheduled post #{scheduled_post_id} is not in a failed state"
+
+            if not sched_repo.force_claim_now(post.id):
+                return False, f"Scheduled post #{scheduled_post_id} could not be claimed for retry"
+
+            return await self._execute_publish(session, post.id, post.reel_id, notify=False)
+        finally:
+            session.close()
+
+    async def publish_now(self, scheduled_post_id: int) -> Tuple[bool, str]:
+        """Handle /publish_now <id>: force-publish a specific scheduled post
+        right now regardless of its due time."""
+        session = get_session()
+        try:
+            sched_repo = ScheduledPostRepository(session)
+            post = session.query(ScheduledPost).get(scheduled_post_id)
+            if not post:
+                return False, f"Scheduled post #{scheduled_post_id} not found"
+
+            if not sched_repo.force_claim_now(post.id):
+                session.refresh(post)
+                return False, f"Scheduled post #{scheduled_post_id} could not be claimed (status: {post.status})"
+
+            return await self._execute_publish(session, post.id, post.reel_id, notify=False)
+        finally:
+            session.close()
+
+    async def _execute_publish(
+        self, session, scheduled_post_id: int, reel_id: int, notify: bool = True
+    ) -> Tuple[bool, str]:
+        """Core publish routine shared by the background job and every
+        manual-trigger command. `scheduled_post_id` must already be claimed
+        (status == 'publishing') by the caller before this is invoked.
+
+        Never swallows a publish failure into a fake success - every branch
+        ends in a durable, persisted terminal-or-retry state, and returns
+        (success, message) so callers know exactly what happened.
+        """
+        reel_repo = GeneratedReelRepository(session)
+        pub_repo = PublishedPostRepository(session)
+        sched_repo = ScheduledPostRepository(session)
+
+        reel = reel_repo.get_by_id(reel_id)
+        if not reel:
+            sanitized = f"Reel #{reel_id} not found"
+            sched_repo.record_failure(scheduled_post_id, sanitized)
+            if notify and self.telegram_bot:
+                await self.telegram_bot.send_notification(f"❌ {sanitized}", level="error")
+            return False, sanitized
+
+        # Idempotent success: if this reel was already published (e.g. a
+        # previous attempt succeeded but the process crashed before updating
+        # this row), converge state without calling Instagram again and
+        # without re-notifying.
+        existing_pub = session.query(PublishedPost).filter_by(reel_id=reel_id).first()
+        if existing_pub:
+            logger.info(
+                f"Reel #{reel_id} already has a PublishedPost (media_id: "
+                f"{existing_pub.instagram_media_id}); marking scheduled post #{scheduled_post_id} published"
+            )
+            sched_repo.mark_published(scheduled_post_id)
+            reel_repo.update_status(reel_id, "published")
+            return True, f"Reel #{reel_id} was already published (media_id: {existing_pub.instagram_media_id})"
+
+        video_path = Path(reel.output_path)
+        if not video_path.exists():
+            return await self._fail_attempt(session, scheduled_post_id, reel_id, f"Video file not found: {video_path}", notify)
+
+        s3_bucket = self.config.get("aws.s3_bucket_name")
+        s3_region = self.config.get("aws.region", "us-east-1")
+
+        # An unset env var with no default substitutes to the literal
+        # "${VAR}" placeholder (truthy!) rather than None - never treat
+        # that as a configured bucket name.
+        if not s3_bucket or (isinstance(s3_bucket, str) and s3_bucket.startswith("${") and s3_bucket.endswith("}")):
+            return await self._fail_attempt(session, scheduled_post_id, reel_id, "S3 bucket not configured", notify)
+
+        instagram = getattr(self, "instagram", None) or InstagramService.from_config()
+
+        try:
+            s3_key = f"reels/{video_path.name}"
+            logger.info(f"Uploading to S3: s3://{s3_bucket}/{s3_key}")
+            s3_url = instagram.s3_upload_and_presign(
+                local_path=video_path,
+                bucket=s3_bucket,
+                region=s3_region,
+                s3_key=s3_key,
+                expires=7200
+            )
+
+            logger.info("Publishing to Instagram via Graph API...")
+            result = instagram.publish_reel(
+                video_url=s3_url,
+                caption=reel.caption,
+                video_path=video_path,
+                poll_seconds=10,
+                max_polls=60
+            )
+        except Exception as e:
+            sanitized = sanitize_error_text(str(e))
+            return await self._fail_attempt(session, scheduled_post_id, reel_id, sanitized, notify)
+
+        media_id = result.media_id
+        logger.info(f"Reel #{reel_id} published successfully (media_id: {media_id})")
+
+        pub_repo.create(
+            reel_id=reel_id,
+            instagram_media_id=media_id,
+            caption=reel.caption,
+            s3_url=f"s3://{s3_bucket}/{s3_key}"
+        )
+        reel_repo.update_status(reel_id, "published")
+        sched_repo.mark_published(scheduled_post_id)
+
+        message = f"Reel #{reel_id} published to Instagram! Media ID: {media_id}"
+        if notify and self.telegram_bot:
+            await self.telegram_bot.send_notification(f"✅ {message}", level="success")
+
+        return True, message
+
+    async def _fail_attempt(
+        self, session, scheduled_post_id: int, reel_id: int, sanitized_error: str, notify: bool
+    ) -> Tuple[bool, str]:
+        """Persist a failed publish attempt (durable state, never swallowed)
+        and apply the retry policy. Notifies Telegram exactly once, only
+        when the retry budget is exhausted (terminal `failed`)."""
+        sched_repo = ScheduledPostRepository(session)
+        logger.error(f"Publish attempt failed for reel #{reel_id}: {sanitized_error}")
+
+        resulting_status = sched_repo.record_failure(scheduled_post_id, sanitized_error)
+
+        if resulting_status == "failed":
+            message = f"Reel #{reel_id} failed permanently after {MAX_PUBLISH_ATTEMPTS} attempts: {sanitized_error}"
+            if notify and self.telegram_bot:
+                await self.telegram_bot.send_notification(f"❌ {message}", level="error")
+            return False, message
+
+        message = f"Reel #{reel_id} publish attempt failed, will retry: {sanitized_error}"
+        return False, message
+
+    async def _run_instagram_preflight(self) -> None:
+        """Read-only startup validation of Instagram credentials/permissions.
+        Never publishes anything. A failure is surfaced but does not crash
+        the bot - scheduling still starts so failures remain visible via
+        /scheduler_status and normal publish attempts.
+        """
+        try:
+            instagram = getattr(self, "instagram", None) or InstagramService.from_config()
+            instagram.preflight_check()
+            logger.info("Instagram preflight check passed")
+        except InstagramAuthError as e:
+            logger.error(f"Instagram preflight auth check FAILED: {e}")
+            if self.telegram_bot:
+                await self.telegram_bot.send_notification(
+                    f"❌ Instagram credentials preflight check failed: {e}", level="error"
+                )
+        except Exception as e:
+            logger.warning(f"Instagram preflight check could not complete: {e}")
+
+    def _recover_stale_publishing(self) -> int:
+        """On startup, reclaim rows stuck in `publishing` whose claimed_at
+        is older than the staleness threshold (a previous process crashed
+        or was restarted mid-publish). Uses a fresh session, closed here."""
+        session = get_session()
+        try:
+            sched_repo = ScheduledPostRepository(session)
+            recovered = sched_repo.recover_stale_publishing()
+            if recovered:
+                logger.warning(f"Recovered {recovered} stale publishing scheduled post(s) after restart")
+            return recovered
+        finally:
+            session.close()
+
+    async def get_scheduler_status(self) -> Dict[str, Any]:
+        """Data for /scheduler_status: running state, current time, next
+        wake-up, per-state counts and overdue count."""
+        tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
+        now_aware = datetime_helpers.now_utc()
+
+        next_wakeup = None
+        try:
+            job = self.scheduler.get_job("publish_scheduled_check")
+            if job and job.next_run_time:
+                next_wakeup = job.next_run_time
+        except Exception:
+            pass
+
+        session = get_session()
+        try:
+            sched_repo = ScheduledPostRepository(session)
+            now_db = datetime_helpers.utc_for_db(now_aware)
+            counts = {
+                status: sched_repo.count_by_status(status)
+                for status in ("pending", "publishing", "retry_wait", "failed")
+            }
+            overdue = sched_repo.get_overdue_count(now=now_db)
+            recent_failed = sched_repo.get_recent_failed(limit=3)
+        finally:
+            session.close()
+
+        return {
+            "running": self.running,
+            "now_utc": now_aware,
+            "now_local": now_aware.astimezone(datetime_helpers.get_timezone(tz_name)),
+            "timezone": tz_name,
+            "next_wakeup_utc": next_wakeup,
+            "counts": counts,
+            "overdue": overdue,
+            "recent_failed": [
+                {"id": p.id, "reel_id": p.reel_id, "error": p.error_message}
+                for p in recent_failed
+            ],
+        }
+
     @staticmethod
     def _get_next_scheduled_time(post_time_config: Dict) -> datetime:
-        """Get the next scheduled time from config."""
-        day = post_time_config.get("day", 1)
-        time_str = post_time_config.get("time", "18:00")
-        hour, minute = map(int, time_str.split(":"))
-
-        now = datetime.utcnow()
-        scheduled = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-        # If time has passed today, schedule for next week
-        if scheduled <= now:
-            scheduled += timedelta(days=7 - now.weekday() + day if day >= now.weekday() else day)
-
-        return scheduled
+        """Get the next scheduled time (naive UTC, for DB storage) from a
+        single config.yaml post_times entry, using the real clock."""
+        schedules = [{"day_of_week": post_time_config.get("day", 0), "time": post_time_config.get("time", "18:00")}]
+        next_slot = datetime_helpers.compute_next_slot(
+            schedules, now=datetime_helpers.now_utc(), tz_name=datetime_helpers.DEFAULT_TIMEZONE
+        )
+        return datetime_helpers.utc_for_db(next_slot)
 
     def _get_next_scheduled_time_from_db(self) -> Optional[datetime]:
         """
-        Get next scheduled time from database ScheduleConfig.
-        Falls back to config.yaml if DB is empty.
+        Get next scheduled time (naive UTC, for DB storage) from database
+        ScheduleConfig. Falls back to config.yaml if DB is empty. Delegates
+        the actual calculation to the pure, unit-tested
+        `datetime_helpers.compute_next_slot`.
 
         Returns:
-            UTC datetime for next scheduled post, or None if no schedule found
+            Naive UTC datetime for next scheduled post, or None if no
+            schedule found.
         """
         session = get_session()
         try:
             config_repo = ScheduleConfigRepository(session)
+            schedules_db = config_repo.get_all()
 
-            # Get all enabled schedule configs
-            schedules = config_repo.get_all()
+            tz_name = self.config.get("scheduling.timezone", "Europe/Istanbul")
 
-            if not schedules:
-                # Fall back to config.yaml
+            if schedules_db:
+                schedules = [{"day_of_week": s.day_of_week, "time": s.time} for s in schedules_db]
+            else:
                 post_times = self.config.get("scheduling.post_times", [])
-                if post_times:
-                    return self._get_next_scheduled_time(post_times[0])
-                logger.warning("No schedules configured in DB or config.yaml")
-                return None
+                if not post_times:
+                    logger.warning("No schedules configured in DB or config.yaml")
+                    return None
+                schedules = [{"day_of_week": p.get("day", 0), "time": p.get("time", "18:00")} for p in post_times]
 
-            # Find the next scheduled time
-            now_utc = datetime.utcnow()
-            tz = datetime_helpers.get_timezone()
-
-            # Convert UTC to local timezone to properly compare with scheduled times
-            from pytz import utc
-            import pytz
-            now_utc_aware = utc.localize(now_utc)
-            now_local = now_utc_aware.astimezone(tz)
-
-            current_weekday = now_local.weekday()
-            current_hour = now_local.hour
-            current_minute = now_local.minute
-
-            # Sort schedules by day and time
-            sorted_schedules = sorted(schedules, key=lambda s: (s.day_of_week, s.time))
-
-            # Find the next scheduled slot
-            for schedule in sorted_schedules:
-                schedule_hour, schedule_minute = map(int, schedule.time.split(":"))
-
-                # Check if this schedule is for today and still in the future
-                if schedule.day_of_week == current_weekday and (schedule_hour, schedule_minute) > (current_hour, current_minute):
-                    # Create a local time and convert back to UTC
-                    next_local = now_local.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
-                    return next_local.astimezone(utc).replace(tzinfo=None)
-
-                # Check if this schedule is for a future day this week
-                if schedule.day_of_week > current_weekday:
-                    days_ahead = schedule.day_of_week - current_weekday
-                    next_local = now_local + timedelta(days=days_ahead)
-                    next_local = next_local.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
-                    return next_local.astimezone(utc).replace(tzinfo=None)
-
-            # All schedules have passed this week, use first schedule for next week
-            first_schedule = sorted_schedules[0]
-            schedule_hour, schedule_minute = map(int, first_schedule.time.split(":"))
-            days_ahead = 7 - current_weekday + first_schedule.day_of_week
-            next_local = now_local + timedelta(days=days_ahead)
-            next_local = next_local.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
-            return next_local.astimezone(utc).replace(tzinfo=None)
+            next_slot = datetime_helpers.compute_next_slot(schedules, now=datetime_helpers.now_utc(), tz_name=tz_name)
+            return datetime_helpers.utc_for_db(next_slot) if next_slot else None
 
         except Exception as e:
             logger.error(f"Error getting next scheduled time from DB: {e}")
-            # Fall back to config.yaml
-            post_times = self.config.get("scheduling.post_times", [])
-            if post_times:
-                return self._get_next_scheduled_time(post_times[0])
             return None
         finally:
             session.close()
